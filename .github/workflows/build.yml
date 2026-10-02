@@ -336,7 +336,7 @@ jobs:
               override fun onListeningTimeout() = goSleep()
 
               override fun onTtsMissing() {
-                  status = "صدای فارسی آفلاین روی گوشی نصب نیست (راهنما: SETUP.md)"
+                  status = "صدای فارسی نصب نیست؛ موتور صدای فارسی رو نصب کن و اپ رو دوباره باز کن"
               }
 
               override fun onError(message: String) {
@@ -841,6 +841,7 @@ jobs:
           package com.example.biliai.voice
 
           import android.content.Context
+          import android.content.Intent
           import android.os.Handler
           import android.os.Looper
           import android.speech.tts.TextToSpeech
@@ -939,13 +940,35 @@ jobs:
                   }
               }
 
+              // موتور صدای فارسی آفلاین (Piper از طریق sherpa-onnx). اگه نصب باشه، بیلی مستقیم از اون استفاده می‌کنه
+              private var sherpaEngine: String? = null
+
+              private fun findSherpaEngine(): String? = try {
+                  val services = ctx.packageManager.queryIntentServices(Intent("android.intent.action.TTS_SERVICE"), 0)
+                  services.map { it.serviceInfo.packageName }
+                      .firstOrNull { it.contains("k2fsa") || it.contains("sherpa") }
+              } catch (e: Exception) {
+                  null
+              }
+
               private fun initTts() {
-                  tts = TextToSpeech(ctx) { status ->
-                      val t = tts
-                      if (status != TextToSpeech.SUCCESS || t == null) {
-                          main.post { listener.onTtsMissing() }
-                          return@TextToSpeech
-                      }
+                  sherpaEngine = findSherpaEngine()
+                  val engine = sherpaEngine
+                  val initListener = TextToSpeech.OnInitListener { status -> onTtsInit(status) }
+                  tts = if (engine != null) TextToSpeech(ctx, initListener, engine)
+                  else TextToSpeech(ctx, initListener)
+              }
+
+              private fun onTtsInit(status: Int) {
+                  val t = tts
+                  if (status != TextToSpeech.SUCCESS || t == null) {
+                      main.post { listener.onTtsMissing() }
+                      return
+                  }
+                  if (sherpaEngine != null) {
+                      // این موتور فقط یک زبان داره (فارسی) و کاملا آفلاینه
+                      t.setLanguage(Locale("fa", "IR"))
+                  } else {
                       val langResult = t.setLanguage(Locale("fa", "IR"))
                       // فقط صدای آفلاین قبول می‌کنیم
                       val offlineVoice = try {
@@ -955,19 +978,19 @@ jobs:
                       }
                       if (langResult < 0 || offlineVoice == null) {
                           main.post { listener.onTtsMissing() }
-                          return@TextToSpeech
+                          return
                       }
                       t.voice = offlineVoice
                       t.setPitch(1.2f)
-                      t.setSpeechRate(1.0f)
-                      t.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                          override fun onStart(utteranceId: String?) {}
-                          override fun onDone(utteranceId: String?) { main.post { finishSpeak() } }
-                          @Deprecated("Deprecated in Java")
-                          override fun onError(utteranceId: String?) { main.post { finishSpeak() } }
-                      })
-                      ttsReady = true
                   }
+                  t.setSpeechRate(1.0f)
+                  t.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                      override fun onStart(utteranceId: String?) {}
+                      override fun onDone(utteranceId: String?) { main.post { finishSpeak() } }
+                      @Deprecated("Deprecated in Java")
+                      override fun onError(utteranceId: String?) { main.post { finishSpeak() } }
+                  })
+                  ttsReady = true
               }
 
               // ---------- شنیدن ----------
