@@ -1,0 +1,1117 @@
+# بیلی موبایل - ساخت خودکار APK (کاملا آفلاین؛ اینترنت فقط موقع ساخت لازمه)
+name: Build Bili APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write project files
+        run: |
+          set -e
+          mkdir -p app
+          mkdir -p app/src/main
+          mkdir -p app/src/main/java/com/example/biliai
+          mkdir -p app/src/main/java/com/example/biliai/audio
+          mkdir -p app/src/main/java/com/example/biliai/brain
+          mkdir -p app/src/main/java/com/example/biliai/ui
+          mkdir -p app/src/main/java/com/example/biliai/voice
+          mkdir -p app/src/main/res/values
+          cat > settings.gradle.kts <<'BILI_EOF_7Q'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "biliai"
+          include(":app")
+          BILI_EOF_7Q
+          cat > build.gradle.kts <<'BILI_EOF_7Q'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "2.0.20" apply false
+              id("org.jetbrains.kotlin.plugin.compose") version "2.0.20" apply false
+          }
+          BILI_EOF_7Q
+          cat > gradle.properties <<'BILI_EOF_7Q'
+          org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          kotlin.code.style=official
+          BILI_EOF_7Q
+          cat > app/build.gradle.kts <<'BILI_EOF_7Q'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+              id("org.jetbrains.kotlin.plugin.compose")
+          }
+
+          android {
+              namespace = "com.example.biliai"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.example.biliai"
+                  minSdk = 24
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "1.0"
+              }
+
+              buildFeatures { compose = true }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+
+          dependencies {
+              implementation(platform("androidx.compose:compose-bom:2024.09.00"))
+              implementation("androidx.compose.ui:ui")
+              implementation("androidx.compose.foundation:foundation")
+              implementation("androidx.compose.material3:material3")
+              implementation("androidx.activity:activity-compose:1.9.2")
+              implementation("androidx.core:core-ktx:1.13.1")
+
+              // تشخیص گفتار آفلاین (Vosk) - بدون اینترنت
+              implementation("com.alphacephei:vosk-android:0.3.47")
+              implementation("net.java.dev.jna:jna:5.13.0@aar")
+          }
+          BILI_EOF_7Q
+          cat > app/src/main/AndroidManifest.xml <<'BILI_EOF_7Q'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <!-- فقط میکروفون. عمداً دسترسی اینترنت وجود نداره: بیلی کاملاً آفلاینه -->
+              <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+              <queries>
+                  <intent>
+                      <action android:name="android.intent.action.TTS_SERVICE" />
+                  </intent>
+              </queries>
+
+              <application
+                  android:allowBackup="false"
+                  android:label="@string/app_name"
+                  android:theme="@style/Theme.Bili">
+                  <activity
+                      android:name=".MainActivity"
+                      android:configChanges="orientation|screenSize|keyboardHidden"
+                      android:exported="true"
+                      android:screenOrientation="landscape">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          BILI_EOF_7Q
+          cat > app/src/main/res/values/strings.xml <<'BILI_EOF_7Q'
+          <resources>
+              <string name="app_name">بیلی</string>
+          </resources>
+          BILI_EOF_7Q
+          cat > app/src/main/res/values/themes.xml <<'BILI_EOF_7Q'
+          <resources>
+              <style name="Theme.Bili" parent="android:Theme.Material.NoActionBar">
+                  <item name="android:windowBackground">@android:color/black</item>
+                  <item name="android:statusBarColor">@android:color/black</item>
+                  <item name="android:navigationBarColor">@android:color/black</item>
+              </style>
+          </resources>
+          BILI_EOF_7Q
+          cat > app/src/main/java/com/example/biliai/Emotion.kt <<'BILI_EOF_7Q'
+          package com.example.biliai
+
+          enum class Emotion { NEUTRAL, HAPPY, CURIOUS, SLEEPY, ANGRY, PLAYFUL, SAD, SCARED, EXCITED }
+          BILI_EOF_7Q
+          cat > app/src/main/java/com/example/biliai/MainActivity.kt <<'BILI_EOF_7Q'
+          package com.example.biliai
+
+          import android.Manifest
+          import android.content.pm.PackageManager
+          import android.os.Bundle
+          import android.view.WindowManager
+          import androidx.activity.ComponentActivity
+          import androidx.activity.compose.setContent
+          import androidx.activity.result.contract.ActivityResultContracts
+          import androidx.compose.foundation.background
+          import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.interaction.MutableInteractionSource
+          import androidx.compose.foundation.layout.Box
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.material3.Text
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.remember
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.text.style.TextAlign
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import androidx.core.content.ContextCompat
+          import androidx.core.view.WindowCompat
+          import androidx.core.view.WindowInsetsCompat
+          import androidx.core.view.WindowInsetsControllerCompat
+          import com.example.biliai.ui.BiliEyes
+
+          class MainActivity : ComponentActivity() {
+
+              private lateinit var controller: BiliController
+
+              private val micPermission =
+                  registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+                      if (granted) controller.start()
+                      else controller.status = "برای گفتگو، دسترسی میکروفون لازمه"
+                  }
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                  WindowCompat.setDecorFitsSystemWindows(window, false)
+                  WindowInsetsControllerCompat(window, window.decorView).apply {
+                      hide(WindowInsetsCompat.Type.systemBars())
+                      systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                  }
+
+                  controller = BiliController(applicationContext)
+                  setContent { BiliScreen(controller) }
+
+                  if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                      == PackageManager.PERMISSION_GRANTED
+                  ) controller.start()
+                  else micPermission.launch(Manifest.permission.RECORD_AUDIO)
+              }
+
+              override fun onStart() {
+                  super.onStart()
+                  controller.setActive(true)
+              }
+
+              override fun onStop() {
+                  super.onStop()
+                  controller.setActive(false)
+              }
+
+              override fun onDestroy() {
+                  controller.release()
+                  super.onDestroy()
+              }
+          }
+
+          @Composable
+          fun BiliScreen(c: BiliController) {
+              Box(
+                  Modifier
+                      .fillMaxSize()
+                      .background(Color.Black)
+                      .clickable(
+                          indication = null,
+                          interactionSource = remember { MutableInteractionSource() }
+                      ) { c.tapToTalk() }
+              ) {
+                  BiliEyes(emotion = c.emotion, awake = c.awake)
+                  Text(
+                      text = c.status,
+                      color = Color(0x66FFFFFF),
+                      fontSize = 12.sp,
+                      textAlign = TextAlign.Center,
+                      modifier = Modifier.align(Alignment.TopCenter).padding(10.dp)
+                  )
+                  Text(
+                      text = c.caption,
+                      color = Color(0xCCFFFFFF),
+                      fontSize = 20.sp,
+                      textAlign = TextAlign.Center,
+                      modifier = Modifier.align(Alignment.BottomCenter).padding(24.dp)
+                  )
+              }
+          }
+          BILI_EOF_7Q
+          cat > app/src/main/java/com/example/biliai/BiliController.kt <<'BILI_EOF_7Q'
+          package com.example.biliai
+
+          import android.content.Context
+          import android.os.Handler
+          import android.os.Looper
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.setValue
+          import com.example.biliai.audio.SoundManager
+          import com.example.biliai.brain.Brain
+          import com.example.biliai.brain.Reply
+          import com.example.biliai.voice.VoiceEngine
+          import com.example.biliai.voice.VoiceListener
+
+          /** هماهنگ‌کننده‌ی بین گوش (STT)، مغز، چشم‌ها، صدا و دهان (TTS) */
+          class BiliController(ctx: Context) : VoiceListener {
+
+              var emotion by mutableStateOf(Emotion.NEUTRAL)
+                  private set
+              var awake by mutableStateOf(false)
+                  private set
+              var caption by mutableStateOf("")
+                  private set
+              var status by mutableStateOf("در حال آماده‌سازی…")
+
+              private val main = Handler(Looper.getMainLooper())
+              private val brain = Brain(ctx)
+              private val sounds = SoundManager()
+              private val voice = VoiceEngine(ctx, this)
+
+              fun start() = voice.init()
+
+              fun setActive(active: Boolean) = voice.setActive(active)
+
+              fun tapToTalk() {
+                  if (!voice.isReady || voice.isBusy) return
+                  wakeUp()
+                  voice.listenCommand()
+              }
+
+              fun release() {
+                  main.removeCallbacksAndMessages(null)
+                  voice.release()
+                  sounds.release()
+              }
+
+              private fun wakeUp() {
+                  if (!awake) {
+                      awake = true
+                      emotion = Emotion.CURIOUS
+                      sounds.play(Emotion.CURIOUS)
+                  }
+                  caption = ""
+              }
+
+              private fun goSleep() {
+                  awake = false
+                  emotion = Emotion.NEUTRAL
+                  caption = ""
+                  voice.listenWake()
+              }
+
+              // ---------- VoiceListener ----------
+
+              override fun onReady() {
+                  status = "بگو «بیلی» یا صفحه رو لمس کن"
+              }
+
+              override fun onWake() = wakeUp()
+
+              override fun onHeard(text: String) {
+                  val reply: Reply = brain.respond(text)
+                  emotion = reply.emotion
+                  val delayMs = sounds.play(reply.emotion)
+                  main.postDelayed({
+                      caption = reply.text
+                      voice.speak(reply.text) {
+                          if (reply.sleep) goSleep() else voice.listenCommand(6000)
+                      }
+                  }, delayMs + 80)
+              }
+
+              override fun onListeningTimeout() = goSleep()
+
+              override fun onTtsMissing() {
+                  status = "صدای فارسی آفلاین روی گوشی نصب نیست (راهنما: SETUP.md)"
+              }
+
+              override fun onError(message: String) {
+                  status = message
+              }
+          }
+          BILI_EOF_7Q
+          cat > app/src/main/java/com/example/biliai/audio/SoundManager.kt <<'BILI_EOF_7Q'
+          package com.example.biliai.audio
+
+          import android.media.AudioAttributes
+          import android.media.AudioFormat
+          import android.media.AudioTrack
+          import com.example.biliai.Emotion
+          import kotlin.math.PI
+          import kotlin.math.min
+          import kotlin.math.sin
+
+          /**
+           * افکت صوتی هر احساس: صداها همین‌جا با کد ساخته می‌شن (بدون فایل صوتی و بدون اینترنت).
+           * هر قطعه = (فرکانس شروع، فرکانس پایان، مدت به میلی‌ثانیه). فرکانس 0 یعنی سکوت.
+           */
+          class SoundManager {
+
+              private data class Seg(val f0: Float, val f1: Float, val ms: Int)
+
+              private val rate = 22050
+              private val cache = mutableMapOf<Emotion, ShortArray>()
+
+              private fun pattern(e: Emotion): List<Seg> = when (e) {
+                  Emotion.NEUTRAL -> listOf(Seg(600f, 720f, 90))
+                  // خنده‌مانند: چند بلیپ سریع بالا و پایین
+                  Emotion.HAPPY -> listOf(
+                      Seg(700f, 950f, 70), Seg(0f, 0f, 30), Seg(950f, 700f, 70), Seg(0f, 0f, 30),
+                      Seg(750f, 1000f, 70), Seg(0f, 0f, 30), Seg(1000f, 750f, 90)
+                  )
+                  Emotion.CURIOUS -> listOf(Seg(500f, 900f, 150), Seg(0f, 0f, 70), Seg(750f, 1050f, 110))
+                  Emotion.SLEEPY -> listOf(Seg(520f, 240f, 450))
+                  Emotion.ANGRY -> listOf(Seg(170f, 140f, 220), Seg(0f, 0f, 50), Seg(180f, 130f, 260))
+                  Emotion.PLAYFUL -> listOf(Seg(500f, 1000f, 100), Seg(1000f, 520f, 100), Seg(600f, 1100f, 120))
+                  Emotion.SAD -> listOf(Seg(620f, 330f, 330), Seg(0f, 0f, 60), Seg(420f, 200f, 420))
+                  Emotion.SCARED -> listOf(
+                      Seg(1200f, 1400f, 50), Seg(0f, 0f, 25), Seg(1250f, 1450f, 50), Seg(0f, 0f, 25),
+                      Seg(1300f, 1500f, 50), Seg(0f, 0f, 25), Seg(1350f, 1550f, 50)
+                  )
+                  Emotion.EXCITED -> listOf(
+                      Seg(600f, 700f, 70), Seg(800f, 900f, 70), Seg(1000f, 1100f, 70), Seg(1300f, 1500f, 120)
+                  )
+              }
+
+              private fun synth(segs: List<Seg>): ShortArray {
+                  val total = segs.sumOf { rate * it.ms / 1000 }
+                  val out = ShortArray(total)
+                  var pos = 0
+                  var phase = 0.0
+                  for (s in segs) {
+                      val n = rate * s.ms / 1000
+                      for (i in 0 until n) {
+                          if (s.f0 > 0f) {
+                              val f = s.f0 + (s.f1 - s.f0) * i / n
+                              phase += 2.0 * PI * f / rate
+                              val edge = min(i, n - i).toFloat() / (n * 0.15f)
+                              val env = min(1f, edge)
+                              out[pos + i] = (sin(phase) * env * 0.45 * Short.MAX_VALUE).toInt().toShort()
+                          }
+                      }
+                      pos += n
+                  }
+                  return out
+              }
+
+              /** صدا رو پخش می‌کنه و مدت اون (میلی‌ثانیه) رو برمی‌گردونه */
+              fun play(e: Emotion): Long {
+                  val pcm = cache.getOrPut(e) { synth(pattern(e)) }
+                  val durationMs = pcm.size * 1000L / rate
+                  Thread {
+                      try {
+                          val track = AudioTrack.Builder()
+                              .setAudioAttributes(
+                                  AudioAttributes.Builder()
+                                      .setUsage(AudioAttributes.USAGE_MEDIA)
+                                      .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                                      .build()
+                              )
+                              .setAudioFormat(
+                                  AudioFormat.Builder()
+                                      .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                                      .setSampleRate(rate)
+                                      .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                                      .build()
+                              )
+                              .setBufferSizeInBytes(pcm.size * 2)
+                              .setTransferMode(AudioTrack.MODE_STATIC)
+                              .build()
+                          track.write(pcm, 0, pcm.size)
+                          track.play()
+                          Thread.sleep(durationMs + 120)
+                          track.release()
+                      } catch (ignored: Exception) {
+                      }
+                  }.start()
+                  return durationMs
+              }
+
+              fun release() {}
+          }
+          BILI_EOF_7Q
+          cat > app/src/main/java/com/example/biliai/brain/PersianText.kt <<'BILI_EOF_7Q'
+          package com.example.biliai.brain
+
+          object PersianText {
+
+              fun normalize(s: String): String {
+                  val sb = StringBuilder()
+                  for (c in s.lowercase()) {
+                      when {
+                          c == 'ي' || c == 'ى' -> sb.append('ی')
+                          c == 'ك' -> sb.append('ک')
+                          c == 'ۀ' || c == 'ة' -> sb.append('ه')
+                          c == 'أ' || c == 'إ' || c == 'ٱ' -> sb.append('ا')
+                          c == '\u200c' || c == '\u200f' || c == '\u200e' -> sb.append(' ')
+                          c in '۰'..'۹' -> sb.append('0' + (c - '۰'))
+                          c in '٠'..'٩' -> sb.append('0' + (c - '٠'))
+                          c in "،؟!.,?:؛\"'«»()-" -> sb.append(' ')
+                          c in '\u064B'..'\u065F' || c == '\u0640' -> { /* حرکات و کشیده: حذف */ }
+                          else -> sb.append(c)
+                      }
+                  }
+                  return sb.toString().trim().replace(Regex("\\s+"), " ")
+              }
+
+              private val WAKE = setOf("بیلی", "ویلی", "بیلیی")
+
+              /** برمی‌گردونه: آیا کلمه‌ی بیدارباش بود؟ + بقیه‌ی جمله بدون اون */
+              fun stripWake(norm: String): Pair<Boolean, String> {
+                  val tokens = norm.split(" ").filter { it.isNotEmpty() }
+                  var found = false
+                  val out = mutableListOf<String>()
+                  var i = 0
+                  while (i < tokens.size) {
+                      if (tokens[i] in WAKE) {
+                          found = true; i++
+                      } else if (i + 1 < tokens.size && (tokens[i] + tokens[i + 1]) in WAKE) {
+                          found = true; i += 2
+                      } else {
+                          out.add(tokens[i]); i++
+                      }
+                  }
+                  return found to out.joinToString(" ")
+              }
+          }
+          BILI_EOF_7Q
+          cat > app/src/main/java/com/example/biliai/brain/Memory.kt <<'BILI_EOF_7Q'
+          package com.example.biliai.brain
+
+          import android.content.Context
+          import android.database.sqlite.SQLiteDatabase
+          import android.database.sqlite.SQLiteOpenHelper
+
+          /** حافظه‌ی محلی بیلی (SQLite روی خود گوشی، بدون اینترنت) */
+          class Memory(ctx: Context) : SQLiteOpenHelper(ctx, "bili.db", null, 1) {
+
+              override fun onCreate(db: SQLiteDatabase) {
+                  db.execSQL("CREATE TABLE facts(k TEXT PRIMARY KEY, v TEXT NOT NULL)")
+                  db.execSQL("CREATE TABLE notes(id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, ts INTEGER NOT NULL)")
+              }
+
+              override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+
+              fun get(key: String): String? =
+                  readableDatabase.rawQuery("SELECT v FROM facts WHERE k=?", arrayOf(key)).use {
+                      if (it.moveToFirst()) it.getString(0) else null
+                  }
+
+              fun set(key: String, value: String) {
+                  writableDatabase.execSQL("INSERT OR REPLACE INTO facts(k,v) VALUES(?,?)", arrayOf(key, value))
+              }
+
+              fun addNote(text: String) {
+                  writableDatabase.execSQL(
+                      "INSERT INTO notes(text,ts) VALUES(?,?)",
+                      arrayOf<Any>(text, System.currentTimeMillis())
+                  )
+              }
+
+              fun lastNotes(n: Int): List<String> =
+                  readableDatabase.rawQuery("SELECT text FROM notes ORDER BY id DESC LIMIT $n", null).use {
+                      val list = mutableListOf<String>()
+                      while (it.moveToNext()) list.add(it.getString(0))
+                      list
+                  }
+          }
+          BILI_EOF_7Q
+          cat > app/src/main/java/com/example/biliai/brain/Brain.kt <<'BILI_EOF_7Q'
+          package com.example.biliai.brain
+
+          import android.content.Context
+          import com.example.biliai.Emotion
+          import java.util.Calendar
+
+          data class Reply(val text: String, val emotion: Emotion, val sleep: Boolean = false)
+
+          /** مغز آفلاین بیلی: فقط قانون‌ها و الگوها، هیچ هوش مصنوعی یا اینترنتی در کار نیست */
+          class Brain(ctx: Context) {
+
+              private val memory = Memory(ctx)
+
+              private val jokes = listOf(
+                  "چرا کامپیوتر سرما می‌خوره؟ چون ویندوزش همیشه بازه!",
+                  "به باتری گفتم چرا همیشه خسته‌ای؟ گفت چون همه ازم انرژی می‌گیرن و کسی شارژم نمی‌کنه!",
+                  "یه ربات رفت دکتر، دکتر گفت مشکلت چیه؟ گفت فکر کنم یه پیچ‌م شله، دیگه نمی‌تونم جدی باشم!"
+              )
+
+              private val monthNames = listOf(
+                  "فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور",
+                  "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند"
+              )
+              private val dayNames = listOf("یکشنبه", "دوشنبه", "سه‌شنبه", "چهارشنبه", "پنجشنبه", "جمعه", "شنبه")
+
+              private fun owner() = memory.get("owner_name") ?: "ابوالفضل"
+
+              private fun has(t: String, vararg keys: String) = keys.any { t.contains(it) }
+
+              private fun emo(e: Emotion, vararg replies: String) = Reply(replies.random(), e)
+
+              fun respond(raw: String): Reply {
+                  val t = PersianText.normalize(raw)
+                  val owner = owner()
+
+                  // خداحافظی / خواب
+                  if (has(t, "خداحافظ", "برو بخواب", "شب بخیر", "بای بای", "فعلا"))
+                      return Reply("باشه، شب خوش! هر وقت خواستی فقط بگو بیلی.", Emotion.SLEEPY, sleep = true)
+
+                  // سوال درباره‌ی اسم کاربر
+                  if (has(t, "اسم من چیه", "اسمم چیه", "من کی هستم", "منو میشناسی"))
+                      return emo(Emotion.HAPPY, "معلومه که میشناسمت! تو $owner هستی.")
+
+                  // یاد دادن اسم
+                  Regex("^(?:اسم من|اسمم) (.+?)(?: هست| است| ه)?$").find(t)?.let {
+                      val name = it.groupValues[1].trim()
+                      if (name.isNotEmpty() && !name.contains("چیه")) {
+                          memory.set("owner_name", name)
+                          return emo(Emotion.EXCITED, "خوشحال شدم $name! از این به بعد اسمت رو یادمه.")
+                      }
+                  }
+
+                  // یادداشت کردن
+                  Regex("^(?:یادت باشه|یادت باشد|یاد بگیر|یادداشت کن) (.+)$").find(t)?.let {
+                      memory.addNote(it.groupValues[1])
+                      return emo(Emotion.HAPPY, "باشه، یادم می‌مونه.")
+                  }
+                  if (has(t, "چی یادته", "یادداشت ها", "یادداشتام", "چی یاد گرفتی")) {
+                      val notes = memory.lastNotes(3)
+                      return if (notes.isEmpty()) emo(Emotion.CURIOUS, "هنوز چیزی بهم نگفتی که یادم باشه.")
+                      else emo(Emotion.NEUTRAL, "اینا رو یادمه: " + notes.joinToString("، "))
+                  }
+
+                  // اسم و هویت بیلی
+                  if (has(t, "اسمت چیه", "اسم تو", "تو کی هستی", "کی هستی", "خودتو معرفی کن"))
+                      return emo(Emotion.HAPPY, "من بیلی هستم، ربات کوچولوی همراه تو! کاملا آفلاینم و همه‌چیز روی همین گوشیه.")
+                  if (has(t, "کی ساختت", "کی تو رو ساخته", "سازنده ات", "سازنده ت"))
+                      return emo(Emotion.EXCITED, "$owner منو ساخته! بهترین سازنده‌ی دنیاست.")
+
+                  // سلام و احوال‌پرسی
+                  if (has(t, "حالت چطوره", "چطوری", "خوبی", "چه خبر"))
+                      return emo(Emotion.HAPPY, "عالیم! باتریم پره و حسابی سرحالم. تو چطوری؟", "خوبم خوبم! کنار تو بودن حال منو خوب می‌کنه.")
+                  if (has(t, "سلام", "درود", "صبح بخیر", "عصر بخیر", "های", "هلو"))
+                      return emo(Emotion.HAPPY, "سلام $owner! خوش اومدی.", "سلام! دلم برات تنگ شده بود.")
+
+                  // ساعت و تاریخ
+                  if (has(t, "ساعت چنده", "ساعت چند", "ساعت رو بگو", "ساعت الان")) {
+                      val c = Calendar.getInstance()
+                      return emo(Emotion.NEUTRAL, "ساعت الان ${c.get(Calendar.HOUR_OF_DAY)} و ${c.get(Calendar.MINUTE)} دقیقه‌ست.")
+                  }
+                  if (has(t, "تاریخ", "امروز چندمه", "امروز چه روزیه", "امروز چه روزی")) {
+                      val c = Calendar.getInstance()
+                      val (jy, jm, jd) = gregorianToJalali(c.get(Calendar.YEAR), c.get(Calendar.MONTH) + 1, c.get(Calendar.DAY_OF_MONTH))
+                      val day = dayNames[c.get(Calendar.DAY_OF_WEEK) - 1]
+                      return emo(Emotion.NEUTRAL, "امروز $day $jd ${monthNames[jm - 1]} $jy هست.")
+                  }
+
+                  // جوک
+                  if (has(t, "جوک", "منو بخندون", "بخندونم", "بخندون"))
+                      return Reply(jokes.random(), Emotion.PLAYFUL)
+
+                  // تشکر
+                  if (has(t, "ممنون", "مرسی", "دمت گرم", "دستت درد نکنه", "تشکر"))
+                      return emo(Emotion.HAPPY, "قابلی نداشت!", "خواهش می‌کنم، وظیفه‌ام بود.")
+
+                  // دستور احساسات
+                  if (has(t, "عصبانی شو", "اخم کن")) return Reply("گررر! عصبانی شدم!", Emotion.ANGRY)
+                  if (has(t, "ناراحت شو", "گریه کن")) return Reply("اوه... دلم گرفت.", Emotion.SAD)
+                  if (has(t, "بترس", "ترسیدم")) return Reply("وای نه! می‌ترسم!", Emotion.SCARED)
+                  if (has(t, "هیجان زده شو", "ذوق کن")) return Reply("هورااا! خیلی هیجان‌زده‌ام!", Emotion.EXCITED)
+                  if (has(t, "شیطونی کن", "چشمک بزن", "شوخی کن")) return Reply("هی هی، من خیلی شیطونم!", Emotion.PLAYFUL)
+                  if (has(t, "کنجکاو شو")) return Reply("هوم؟ اون چیه؟", Emotion.CURIOUS)
+                  if (has(t, "بخند", "خوشحال شو")) return Reply("هاهاها! چه روز قشنگی!", Emotion.HAPPY)
+                  if (has(t, "خوابم میاد", "خسته ام")) return Reply("پس برو یه کم استراحت کن.", Emotion.SLEEPY)
+
+                  return emo(Emotion.CURIOUS, "ببخشید، متوجه نشدم. می‌شه دوباره بگی؟", "هوم؟ این رو بلد نیستم هنوز.")
+              }
+
+              /** تبدیل تاریخ میلادی به شمسی (بدون هیچ کتابخانه‌ی خارجی) */
+              private fun gregorianToJalali(gy: Int, gm: Int, gd: Int): Triple<Int, Int, Int> {
+                  val gdm = intArrayOf(0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334)
+                  val gy2 = if (gm > 2) gy + 1 else gy
+                  var days = 355666 + (365 * gy) + ((gy2 + 3) / 4) - ((gy2 + 99) / 100) + ((gy2 + 399) / 400) + gd + gdm[gm - 1]
+                  var jy = -1595 + (33 * (days / 12053))
+                  days %= 12053
+                  jy += 4 * (days / 1461)
+                  days %= 1461
+                  if (days > 365) {
+                      jy += (days - 1) / 365
+                      days = (days - 1) % 365
+                  }
+                  val jm = if (days < 186) 1 + days / 31 else 7 + (days - 186) / 30
+                  val jd = 1 + if (days < 186) days % 31 else (days - 186) % 30
+                  return Triple(jy, jm, jd)
+              }
+          }
+          BILI_EOF_7Q
+          cat > app/src/main/java/com/example/biliai/ui/BiliEyes.kt <<'BILI_EOF_7Q'
+          package com.example.biliai.ui
+
+          import androidx.compose.animation.animateColorAsState
+          import androidx.compose.animation.core.Animatable
+          import androidx.compose.animation.core.FastOutSlowInEasing
+          import androidx.compose.animation.core.LinearEasing
+          import androidx.compose.animation.core.RepeatMode
+          import androidx.compose.animation.core.animateFloat
+          import androidx.compose.animation.core.animateFloatAsState
+          import androidx.compose.animation.core.infiniteRepeatable
+          import androidx.compose.animation.core.rememberInfiniteTransition
+          import androidx.compose.animation.core.tween
+          import androidx.compose.foundation.Canvas
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.LaunchedEffect
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.remember
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.geometry.CornerRadius
+          import androidx.compose.ui.geometry.Offset
+          import androidx.compose.ui.geometry.RoundRect
+          import androidx.compose.ui.geometry.Size
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.graphics.Path
+          import androidx.compose.ui.graphics.drawscope.clipPath
+          import com.example.biliai.Emotion
+          import kotlinx.coroutines.delay
+          import kotlin.random.Random
+
+          /** پارامترهای شکل چشم برای هر احساس */
+          private data class Shape(
+              val open: Float = 1f,        // باز بودن عمودی
+              val w: Float = 1f,           // ضریب عرض
+              val h: Float = 1f,           // ضریب ارتفاع
+              val angry: Float = 0f,       // پلک اخمو
+              val sad: Float = 0f,         // پلک غمگین
+              val cheek: Float = 0f,       // لبه‌ی خندان پایین چشم
+              val rightOpen: Float = 1f,   // چشم راست (برای چشمک)
+              val rightScale: Float = 1f,  // بزرگ‌تر بودن چشم راست (کنجکاوی)
+              val lookY: Float = 0f,
+              val shake: Float = 0f,
+              val bounce: Float = 0f,
+          )
+
+          private fun shapeFor(e: Emotion): Shape = when (e) {
+              Emotion.NEUTRAL -> Shape()
+              Emotion.HAPPY -> Shape(cheek = 0.55f, h = 0.9f)
+              Emotion.CURIOUS -> Shape(rightScale = 1.25f, lookY = -0.2f, h = 1.05f)
+              Emotion.SLEEPY -> Shape(open = 0.3f)
+              Emotion.ANGRY -> Shape(angry = 0.55f, h = 0.85f)
+              Emotion.PLAYFUL -> Shape(rightOpen = 0.12f, cheek = 0.3f)
+              Emotion.SAD -> Shape(sad = 0.55f, open = 0.85f, lookY = 0.2f)
+              Emotion.SCARED -> Shape(w = 0.7f, h = 1.25f, shake = 1f)
+              Emotion.EXCITED -> Shape(w = 1.15f, h = 1.15f, cheek = 0.25f, bounce = 1f)
+          }
+
+          private fun colorFor(e: Emotion): Color = when (e) {
+              Emotion.ANGRY -> Color(0xFFFF5252)
+              Emotion.SAD -> Color(0xFF7FB2FF)
+              Emotion.HAPPY -> Color(0xFF5CFFB0)
+              Emotion.EXCITED -> Color(0xFFFFE066)
+              Emotion.PLAYFUL -> Color(0xFFFF8CF0)
+              else -> Color(0xFF4DE8FF)
+          }
+
+          @Composable
+          private fun anim(v: Float): Float = animateFloatAsState(v, tween(380), label = "p").value
+
+          @Composable
+          fun BiliEyes(emotion: Emotion, awake: Boolean, modifier: Modifier = Modifier) {
+              val s = shapeFor(emotion)
+              val open = anim(s.open)
+              val w = anim(s.w)
+              val h = anim(s.h)
+              val angry = anim(s.angry)
+              val sad = anim(s.sad)
+              val cheek = anim(s.cheek)
+              val rOpen = anim(s.rightOpen)
+              val rScale = anim(s.rightScale)
+              val lookY = anim(s.lookY)
+              val shake = anim(s.shake)
+              val bounce = anim(s.bounce)
+              val wake by animateFloatAsState(if (awake) 1f else 0f, tween(550), label = "wake")
+              val color by animateColorAsState(colorFor(emotion), tween(380), label = "color")
+
+              val blink = remember { Animatable(1f) }
+              val lookX = remember { Animatable(0f) }
+
+              LaunchedEffect(Unit) {
+                  while (true) {
+                      delay(Random.nextLong(2200, 5200))
+                      blink.animateTo(0.05f, tween(80))
+                      blink.animateTo(1f, tween(110))
+                  }
+              }
+              LaunchedEffect(Unit) {
+                  while (true) {
+                      delay(Random.nextLong(1500, 3800))
+                      lookX.animateTo(Random.nextFloat() * 0.36f - 0.18f, tween(300))
+                  }
+              }
+
+              val inf = rememberInfiniteTransition(label = "inf")
+              val wob by inf.animateFloat(
+                  -1f, 1f,
+                  infiniteRepeatable(tween(90, easing = LinearEasing), RepeatMode.Reverse),
+                  label = "wob"
+              )
+              val bob by inf.animateFloat(
+                  0f, 1f,
+                  infiniteRepeatable(tween(260, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+                  label = "bob"
+              )
+
+              Canvas(modifier.fillMaxSize()) {
+                  val cw = size.width
+                  val ch = size.height
+                  val baseW = cw * 0.22f
+                  val baseH = ch * 0.5f
+                  val gap = cw * 0.12f
+                  val cyBase = ch * 0.5f - bounce * bob * ch * 0.04f
+                  val a = 0.3f + 0.7f * wake
+                  // وقتی بیدار نیست چشم‌ها یه خط باریک و کم‌نورن؛ با بیدار شدن، باز می‌شن
+                  val openNow = (0.05f + (open - 0.05f) * wake) * blink.value
+
+                  for (side in 0..1) {
+                      val isRight = side == 1
+                      val sc = if (isRight) rScale else 1f
+                      val ow = baseW * w * sc
+                      val oh = (baseH * h * sc * openNow * (if (isRight) rOpen else 1f)).coerceAtLeast(6f)
+                      val dir = if (isRight) 1f else -1f
+                      val cx = cw / 2f + dir * (gap / 2f + baseW / 2f) + shake * wob * cw * 0.006f + lookX.value * baseW
+                      val cy = cyBase + lookY * baseH * 0.25f
+                      val left = cx - ow / 2f
+                      val top = cy - oh / 2f
+                      val radius = CornerRadius(minOf(ow, oh) * 0.35f)
+
+                      // درخشش ملایم دور چشم
+                      drawRoundRect(
+                          color.copy(alpha = 0.10f * a),
+                          topLeft = Offset(left - ow * 0.06f, top - oh * 0.04f),
+                          size = Size(ow * 1.12f, oh * 1.08f),
+                          cornerRadius = radius
+                      )
+
+                      val eye = Path().apply { addRoundRect(RoundRect(left, top, left + ow, top + oh, radius)) }
+                      drawPath(eye, color.copy(alpha = a))
+
+                      clipPath(eye) {
+                          val outerX = if (isRight) left + ow else left
+                          val innerX = if (isRight) left else left + ow
+                          if (angry > 0.01f) {
+                              val lid = Path().apply {
+                                  moveTo(outerX, top - 2f); lineTo(innerX, top - 2f)
+                                  lineTo(innerX, top + angry * oh); close()
+                              }
+                              drawPath(lid, Color.Black)
+                          }
+                          if (sad > 0.01f) {
+                              val lid = Path().apply {
+                                  moveTo(innerX, top - 2f); lineTo(outerX, top - 2f)
+                                  lineTo(outerX, top + sad * oh); close()
+                              }
+                              drawPath(lid, Color.Black)
+                          }
+                          if (cheek > 0.01f) {
+                              drawOval(
+                                  Color.Black,
+                                  topLeft = Offset(left - ow * 0.15f, top + oh * (1f - cheek)),
+                                  size = Size(ow * 1.3f, oh * cheek * 1.8f)
+                              )
+                          }
+                      }
+                  }
+              }
+          }
+          BILI_EOF_7Q
+          cat > app/src/main/java/com/example/biliai/voice/VoiceEngine.kt <<'BILI_EOF_7Q'
+          package com.example.biliai.voice
+
+          import android.content.Context
+          import android.os.Handler
+          import android.os.Looper
+          import android.speech.tts.TextToSpeech
+          import android.speech.tts.UtteranceProgressListener
+          import com.example.biliai.brain.PersianText
+          import org.json.JSONObject
+          import org.vosk.Model
+          import org.vosk.Recognizer
+          import org.vosk.android.RecognitionListener
+          import org.vosk.android.SpeechService
+          import java.io.File
+          import java.io.FileNotFoundException
+          import java.io.FileOutputStream
+          import java.util.Locale
+
+          interface VoiceListener {
+              fun onReady()
+              fun onWake()
+              fun onHeard(text: String)
+              fun onListeningTimeout()
+              fun onTtsMissing()
+              fun onError(message: String)
+          }
+
+          /**
+           * تشخیص گفتار آفلاین فارسی با Vosk + کلمه‌ی بیدارباش «بیلی» + صحبت کردن با TTS آفلاین.
+           * هیچ درخواست اینترنتی در کار نیست.
+           */
+          class VoiceEngine(private val ctx: Context, private val listener: VoiceListener) : RecognitionListener {
+
+              private enum class Mode { WAKE, COMMAND, BUSY }
+
+              private val main = Handler(Looper.getMainLooper())
+              private var mode = Mode.WAKE
+              private var model: Model? = null
+              private var service: SpeechService? = null
+              private var tts: TextToSpeech? = null
+              private var ttsReady = false
+              private var onSpeakDone: (() -> Unit)? = null
+              private var active = true
+
+              val isReady: Boolean get() = service != null
+              val isBusy: Boolean get() = mode == Mode.BUSY
+
+              private val commandTimeout = Runnable {
+                  if (mode == Mode.COMMAND) {
+                      mode = Mode.WAKE
+                      listener.onListeningTimeout()
+                  }
+              }
+
+              // ---------- راه‌اندازی ----------
+
+              fun init() {
+                  initTts()
+                  Thread {
+                      try {
+                          val dir = File(ctx.filesDir, "model-fa")
+                          val marker = File(dir, ".copied")
+                          if (!marker.exists()) {
+                              if ((ctx.assets.list("model-fa") ?: emptyArray()).isEmpty()) {
+                                  throw IllegalStateException("پوشه‌ی model-fa داخل assets پیدا نشد")
+                              }
+                              dir.deleteRecursively()
+                              copyAssets("model-fa", dir)
+                              marker.writeText("ok")
+                          }
+                          val m = Model(dir.absolutePath)
+                          val svc = SpeechService(Recognizer(m, 16000.0f), 16000.0f)
+                          main.post {
+                              model = m
+                              service = svc
+                              svc.startListening(this)
+                              listener.onReady()
+                          }
+                      } catch (e: Throwable) {
+                          main.post { listener.onError("خطا در بارگذاری مدل صوتی: ${e.message}") }
+                      }
+                  }.start()
+              }
+
+              private fun copyAssets(path: String, dest: File) {
+                  val children = ctx.assets.list(path) ?: emptyArray()
+                  if (children.isEmpty()) {
+                      try {
+                          dest.parentFile?.mkdirs()
+                          ctx.assets.open(path).use { input ->
+                              FileOutputStream(dest).use { output -> input.copyTo(output) }
+                          }
+                      } catch (ignored: FileNotFoundException) {
+                          dest.mkdirs()
+                      }
+                  } else {
+                      dest.mkdirs()
+                      for (c in children) copyAssets("$path/$c", File(dest, c))
+                  }
+              }
+
+              private fun initTts() {
+                  tts = TextToSpeech(ctx) { status ->
+                      val t = tts
+                      if (status != TextToSpeech.SUCCESS || t == null) {
+                          main.post { listener.onTtsMissing() }
+                          return@TextToSpeech
+                      }
+                      val langResult = t.setLanguage(Locale("fa", "IR"))
+                      // فقط صدای آفلاین قبول می‌کنیم
+                      val offlineVoice = try {
+                          t.voices?.firstOrNull { it.locale.language == "fa" && !it.isNetworkConnectionRequired }
+                      } catch (e: Exception) {
+                          null
+                      }
+                      if (langResult < 0 || offlineVoice == null) {
+                          main.post { listener.onTtsMissing() }
+                          return@TextToSpeech
+                      }
+                      t.voice = offlineVoice
+                      t.setPitch(1.2f)
+                      t.setSpeechRate(1.0f)
+                      t.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                          override fun onStart(utteranceId: String?) {}
+                          override fun onDone(utteranceId: String?) { main.post { finishSpeak() } }
+                          @Deprecated("Deprecated in Java")
+                          override fun onError(utteranceId: String?) { main.post { finishSpeak() } }
+                      })
+                      ttsReady = true
+                  }
+              }
+
+              // ---------- شنیدن ----------
+
+              override fun onPartialResult(hypothesis: String?) {
+                  if (mode != Mode.WAKE || hypothesis == null) return
+                  val text = PersianText.normalize(JSONObject(hypothesis).optString("partial"))
+                  if (text.isNotEmpty() && PersianText.stripWake(text).first) enterCommandMode()
+              }
+
+              override fun onResult(hypothesis: String?) {
+                  if (hypothesis == null) return
+                  handleText(PersianText.normalize(JSONObject(hypothesis).optString("text")))
+              }
+
+              override fun onFinalResult(hypothesis: String?) {
+                  onResult(hypothesis)
+              }
+
+              override fun onError(exception: Exception?) {
+                  main.post { listener.onError("خطای میکروفون: ${exception?.message}") }
+              }
+
+              override fun onTimeout() {}
+
+              private fun handleText(text: String) {
+                  if (text.isEmpty()) return
+                  when (mode) {
+                      Mode.BUSY -> {}
+                      Mode.WAKE -> {
+                          val (found, rest) = PersianText.stripWake(text)
+                          if (!found) return
+                          enterCommandMode()
+                          if (rest.isNotEmpty()) deliver(rest)
+                      }
+                      Mode.COMMAND -> {
+                          val rest = PersianText.stripWake(text).second
+                          if (rest.isNotEmpty()) deliver(rest)
+                      }
+                  }
+              }
+
+              private fun enterCommandMode() {
+                  mode = Mode.COMMAND
+                  main.removeCallbacks(commandTimeout)
+                  main.postDelayed(commandTimeout, 8000)
+                  listener.onWake()
+              }
+
+              private fun deliver(text: String) {
+                  main.removeCallbacks(commandTimeout)
+                  mode = Mode.BUSY
+                  listener.onHeard(text)
+              }
+
+              // ---------- کنترل از بیرون ----------
+
+              /** گوش بده برای دستور (مثلا بعد از لمس صفحه یا بعد از جواب بیلی) */
+              fun listenCommand(timeoutMs: Long = 7000) {
+                  mode = Mode.COMMAND
+                  resumeMic()
+                  main.removeCallbacks(commandTimeout)
+                  main.postDelayed(commandTimeout, timeoutMs)
+              }
+
+              fun listenWake() {
+                  main.removeCallbacks(commandTimeout)
+                  mode = Mode.WAKE
+                  resumeMic()
+              }
+
+              private fun resumeMic() {
+                  service?.reset()
+                  if (active) service?.setPause(false)
+              }
+
+              fun setActive(a: Boolean) {
+                  active = a
+                  if (!a) service?.setPause(true)
+                  else if (mode != Mode.BUSY) service?.setPause(false)
+              }
+
+              fun speak(text: String, onDone: () -> Unit) {
+                  val t = tts
+                  if (!ttsReady || t == null) {
+                      main.post(onDone)
+                      return
+                  }
+                  onSpeakDone = onDone
+                  service?.setPause(true) // تا بیلی صدای خودش رو نشنوه
+                  t.speak(text, TextToSpeech.QUEUE_FLUSH, null, "bili")
+              }
+
+              private fun finishSpeak() {
+                  val cb = onSpeakDone
+                  onSpeakDone = null
+                  cb?.invoke()
+              }
+
+              fun release() {
+                  main.removeCallbacksAndMessages(null)
+                  try { service?.stop() } catch (ignored: Exception) {}
+                  try { service?.shutdown() } catch (ignored: Exception) {}
+                  try { model?.close() } catch (ignored: Exception) {}
+                  try { tts?.stop(); tts?.shutdown() } catch (ignored: Exception) {}
+              }
+          }
+          BILI_EOF_7Q
+
+      - name: Download Persian Vosk model (bundled into the APK, runs offline)
+        run: |
+          mkdir -p app/src/main/assets
+          curl -fL -o model.zip https://alphacephei.com/vosk/models/vosk-model-small-fa-0.42.zip
+          unzip -q model.zip
+          mv vosk-model-small-fa-0.42 app/src/main/assets/model-fa
+          rm -rf app/src/main/assets/model-fa/test model.zip
+          ls app/src/main/assets/model-fa
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk Bili.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Bili-APK
+          path: Bili.apk
+
+      - name: Publish APK in Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: bili-build-${{ github.run_number }}
+          name: Bili APK (build ${{ github.run_number }})
+          files: Bili.apk
+
