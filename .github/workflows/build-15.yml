@@ -1,0 +1,2567 @@
+# بیلی موبایل - ساخت خودکار APK (کاملا آفلاین؛ اینترنت فقط موقع ساخت لازمه)
+name: Build Bili APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write project files
+        run: |
+          set -e
+          mkdir -p app
+          mkdir -p app/src/main
+          mkdir -p app/src/main/java/com/example/biliai
+          mkdir -p app/src/main/java/com/example/biliai/audio
+          mkdir -p app/src/main/java/com/example/biliai/brain
+          mkdir -p app/src/main/java/com/example/biliai/ui
+          mkdir -p app/src/main/java/com/example/biliai/voice
+          mkdir -p app/src/main/java/com/example/biliai/music
+          mkdir -p app/src/main/res/values
+          cat > settings.gradle.kts <<'BILI_EOF_7Q'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "biliai"
+          include(":app")
+          BILI_EOF_7Q
+          cat > build.gradle.kts <<'BILI_EOF_7Q'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "2.0.20" apply false
+              id("org.jetbrains.kotlin.plugin.compose") version "2.0.20" apply false
+          }
+          BILI_EOF_7Q
+          cat > gradle.properties <<'BILI_EOF_7Q'
+          org.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          kotlin.code.style=official
+          BILI_EOF_7Q
+          cat > app/build.gradle.kts <<'BILI_EOF_7Q'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+              id("org.jetbrains.kotlin.plugin.compose")
+          }
+
+          android {
+              namespace = "com.example.biliai"
+              compileSdk = 34
+
+              defaultConfig {
+                  applicationId = "com.example.biliai"
+                  minSdk = 24
+                  targetSdk = 34
+                  versionCode = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
+                  versionName = "1.0"
+              }
+
+              // کلید امضای ثابت: از این به بعد نسخه‌ی جدید روی نسخه‌ی قبلی نصب می‌شه
+              signingConfigs {
+                  create("bili") {
+                      storeFile = file("bili.keystore")
+                      storeType = "pkcs12"
+                      storePassword = "bilibili"
+                      keyAlias = "bili"
+                      keyPassword = "bilibili"
+                  }
+              }
+              buildTypes {
+                  getByName("debug") { signingConfig = signingConfigs.getByName("bili") }
+              }
+
+              buildFeatures { compose = true }
+
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = "17" }
+          }
+
+          dependencies {
+              implementation(platform("androidx.compose:compose-bom:2024.09.00"))
+              implementation("androidx.compose.ui:ui")
+              implementation("androidx.compose.foundation:foundation")
+              implementation("androidx.compose.material3:material3")
+              implementation("androidx.activity:activity-compose:1.9.2")
+              implementation("androidx.core:core-ktx:1.13.1")
+
+              // تشخیص گفتار آفلاین (Vosk) - بدون اینترنت
+              implementation("com.alphacephei:vosk-android:0.3.47")
+              implementation("net.java.dev.jna:jna:5.13.0@aar")
+          }
+          BILI_EOF_7Q
+          cat > app/src/main/AndroidManifest.xml <<'BILI_EOF_7Q'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <!-- میکروفون + (برای موسیقی) خواندن آهنگ‌های گوشی. عمداً دسترسی اینترنت وجود نداره: بیلی کاملاً آفلاینه -->
+              <uses-permission android:name="android.permission.RECORD_AUDIO" />
+              <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+              <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+              <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+              <uses-permission android:name="android.permission.WAKE_LOCK" />
+              <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+              <queries>
+                  <intent>
+                      <action android:name="android.intent.action.TTS_SERVICE" />
+                  </intent>
+              </queries>
+
+              <application
+                  android:allowBackup="false"
+                  android:label="@string/app_name"
+                  android:theme="@style/Theme.Bili">
+                  <activity
+                      android:name=".MainActivity"
+                      android:configChanges="orientation|screenSize|keyboardHidden"
+                      android:exported="true"
+                      android:launchMode="singleTop"
+                      android:showWhenLocked="true"
+                      android:turnScreenOn="true"
+                      android:screenOrientation="fullSensor">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <service
+                      android:name=".BiliService"
+                      android:exported="false"
+                      android:foregroundServiceType="microphone" />
+              </application>
+          </manifest>
+          BILI_EOF_7Q
+          cat > app/src/main/res/values/strings.xml <<'BILI_EOF_7Q'
+          <resources>
+              <string name="app_name">بیلی</string>
+          </resources>
+          BILI_EOF_7Q
+          cat > app/src/main/res/values/themes.xml <<'BILI_EOF_7Q'
+          <resources>
+              <style name="Theme.Bili" parent="android:Theme.Material.NoActionBar">
+                  <item name="android:windowBackground">@android:color/black</item>
+                  <item name="android:statusBarColor">@android:color/black</item>
+                  <item name="android:navigationBarColor">@android:color/black</item>
+              </style>
+          </resources>
+          BILI_EOF_7Q
+          cat > app/src/main/java/com/example/biliai/Emotion.kt <<'BILI_EOF_7Q'
+          package com.example.biliai
+
+          enum class Emotion { NEUTRAL, HAPPY, CURIOUS, SLEEPY, ANGRY, PLAYFUL, SAD, SCARED, EXCITED }
+          BILI_EOF_7Q
+          cat > app/src/main/java/com/example/biliai/MainActivity.kt <<'BILI_EOF_7Q'
+          package com.example.biliai
+
+          import android.Manifest
+          import android.app.NotificationManager
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.os.Handler
+          import android.os.Looper
+          import android.os.PowerManager
+          import android.provider.Settings
+          import android.view.WindowManager
+          import androidx.activity.ComponentActivity
+          import androidx.activity.compose.BackHandler
+          import androidx.activity.compose.setContent
+          import androidx.activity.result.contract.ActivityResultContracts
+          import androidx.compose.foundation.background
+          import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.interaction.MutableInteractionSource
+          import androidx.compose.foundation.layout.Box
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.material3.Text
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.remember
+          import androidx.compose.runtime.setValue
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.text.style.TextAlign
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import androidx.core.content.ContextCompat
+          import androidx.core.view.WindowCompat
+          import androidx.core.view.WindowInsetsCompat
+          import androidx.core.view.WindowInsetsControllerCompat
+          import com.example.biliai.music.MusicPlayer
+          import com.example.biliai.ui.BiliEyes
+          import com.example.biliai.ui.SettingsScreen
+
+          class MainActivity : ComponentActivity() {
+
+              private lateinit var controller: BiliController
+
+              private val permissionLauncher =
+                  registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+                      if (hasMic()) startBili()
+                      else controller.status = "برای گفتگو، دسترسی میکروفون لازمه"
+                  }
+
+              private var showSettings by mutableStateOf(false)
+              private var audioGranted by mutableStateOf(false)
+              private var overlayGranted by mutableStateOf(false)
+              private var fsiGranted by mutableStateOf(true)
+
+              private val handler = Handler(Looper.getMainLooper())
+              private var fromWake = false
+
+              /** وقتی بیلی با صدا صفحه رو آورده جلو، بعد از مدتی (اگه کسی دست نزد) صفحه رو می‌بنده تا گوشی بخوابه */
+              private val autoHide = Runnable {
+                  if (fromWake) {
+                      fromWake = false
+                      window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                      moveTaskToBack(true)
+                  }
+              }
+
+              /** بیلی خوابید ← چهره می‌ره (فقط اگه با صدا اومده باشه جلو) */
+              private val hideIfAsleep = Runnable {
+                  if (fromWake && !controller.awake) {
+                      handler.removeCallbacks(autoHide)
+                      autoHide.run()
+                  }
+              }
+
+              private fun handleWakeIntent(i: Intent?) {
+                  if (i?.getBooleanExtra(WakeUi.EXTRA_FROM_WAKE, false) != true) return
+                  fromWake = true
+                  window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                  handler.removeCallbacks(autoHide)
+                  handler.postDelayed(autoHide, 300000L)
+              }
+
+              private fun refreshPerms() {
+                  audioGranted = controller.music.hasPermission()
+                  overlayGranted = Settings.canDrawOverlays(this)
+                  fsiGranted = if (Build.VERSION.SDK_INT >= 34) {
+                      getSystemService(NotificationManager::class.java).canUseFullScreenIntent()
+                  } else {
+                      true
+                  }
+              }
+
+              private fun openOverlaySettings() {
+                  try {
+                      startActivity(
+                          Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
+                      )
+                  } catch (e: Exception) {
+                  }
+              }
+
+              private fun openFullScreenSettings() {
+                  if (Build.VERSION.SDK_INT >= 34) {
+                      try {
+                          startActivity(
+                              Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, Uri.parse("package:$packageName"))
+                          )
+                      } catch (e: Exception) {
+                      }
+                  }
+              }
+
+              override fun onNewIntent(intent: Intent) {
+                  super.onNewIntent(intent)
+                  setIntent(intent)
+                  handleWakeIntent(intent)
+              }
+
+              override fun onResume() {
+                  super.onResume()
+                  BiliHub.uiVisible = true
+                  WakeUi.cancel(this)
+                  if (!fromWake) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                  refreshPerms()
+              }
+
+              override fun onPause() {
+                  BiliHub.uiVisible = false
+                  super.onPause()
+              }
+
+              override fun onUserInteraction() {
+                  super.onUserInteraction()
+                  if (fromWake) {
+                      // کاربر خودش با صفحه کار می‌کنه؛ دیگه خودکار نمی‌بندیم
+                      fromWake = false
+                      handler.removeCallbacks(autoHide)
+                      window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                  }
+              }
+
+              override fun onDestroy() {
+                  handler.removeCallbacks(autoHide)
+                  handler.removeCallbacks(hideIfAsleep)
+                  if (::controller.isInitialized) controller.onSleep = null
+                  super.onDestroy()
+              }
+
+              private val audioPermissionLauncher =
+                  registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+                      audioGranted = granted
+                  }
+
+              private fun hasMic() = ContextCompat.checkSelfPermission(
+                  this, Manifest.permission.RECORD_AUDIO
+              ) == PackageManager.PERMISSION_GRANTED
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                  WindowCompat.setDecorFitsSystemWindows(window, false)
+                  WindowInsetsControllerCompat(window, window.decorView).apply {
+                      hide(WindowInsetsCompat.Type.systemBars())
+                      systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                  }
+
+                  // اگه سرویس از قبل بیداره، همون بیلی رو نشون می‌دیم
+                  controller = BiliHub.controller
+                      ?: BiliController(applicationContext).also { BiliHub.controller = it }
+                  refreshPerms()
+                  controller.onSleep = { handler.postDelayed(hideIfAsleep, 1200L) }
+                  handleWakeIntent(intent)
+                  setContent {
+                      BackHandler(enabled = showSettings) { showSettings = false }
+                      if (showSettings) {
+                          SettingsScreen(
+                              music = controller.music,
+                              hasPermission = audioGranted,
+                              overlayGranted = overlayGranted,
+                              fsiGranted = fsiGranted,
+                              onOpenOverlay = { openOverlaySettings() },
+                              onOpenFullScreen = { openFullScreenSettings() },
+                              onRequestPermission = { audioPermissionLauncher.launch(MusicPlayer.permissionName()) },
+                              onClose = { showSettings = false }
+                          )
+                      } else {
+                          BiliScreen(controller, onOpenSettings = {
+                              refreshPerms()
+                              showSettings = true
+                          })
+                      }
+                  }
+
+                  val needed = mutableListOf(Manifest.permission.RECORD_AUDIO)
+                  if (Build.VERSION.SDK_INT >= 33) needed.add(Manifest.permission.POST_NOTIFICATIONS)
+                  val missing = needed.filter {
+                      ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+                  }
+                  if (missing.isEmpty()) startBili() else permissionLauncher.launch(missing.toTypedArray())
+              }
+
+              private fun startBili() {
+                  ContextCompat.startForegroundService(this, Intent(this, BiliService::class.java))
+                  askBatteryOptimizationOnce()
+              }
+
+              /** برای اینکه سیستم بیلی رو وقتی صفحه خاموشه نبنده، یک بار اجازه‌ی «بدون محدودیت باتری» می‌خوایم */
+              private fun askBatteryOptimizationOnce() {
+                  val prefs = getSharedPreferences("bili", Context.MODE_PRIVATE)
+                  if (prefs.getBoolean("asked_battery", false)) return
+                  prefs.edit().putBoolean("asked_battery", true).apply()
+                  val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                  if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+                      try {
+                          startActivity(
+                              Intent(
+                                  Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                  Uri.parse("package:$packageName")
+                              )
+                          )
+                      } catch (e: Exception) {
+                      }
+                  }
+              }
+          }
+
+          @Composable
+          fun BiliScreen(c: BiliController, onOpenSettings: () -> Unit) {
+              Box(
+                  Modifier
+                      .fillMaxSize()
+                      .background(Color.Black)
+                      .clickable(
+                          indication = null,
+                          interactionSource = remember { MutableInteractionSource() }
+                      ) { c.tapToTalk() }
+              ) {
+                  BiliEyes(emotion = c.emotion, awake = c.awake)
+                  Text(
+                      text = c.status,
+                      color = Color(0x66FFFFFF),
+                      fontSize = 12.sp,
+                      textAlign = TextAlign.Center,
+                      modifier = Modifier.align(Alignment.TopCenter).padding(10.dp)
+                  )
+                  Text(
+                      text = "⚙",
+                      color = Color(0x88FFFFFF),
+                      fontSize = 26.sp,
+                      modifier = Modifier
+                          .align(Alignment.TopEnd)
+                          .clickable { onOpenSettings() }
+                          .padding(16.dp)
+                  )
+                  Text(
+                      text = c.caption,
+                      color = Color(0xCCFFFFFF),
+                      fontSize = 20.sp,
+                      textAlign = TextAlign.Center,
+                      modifier = Modifier.align(Alignment.BottomCenter).padding(24.dp)
+                  )
+              }
+          }
+          BILI_EOF_7Q
+          cat > app/src/main/java/com/example/biliai/BiliController.kt <<'BILI_EOF_7Q'
+          package com.example.biliai
+
+          import android.content.Context
+          import android.os.Handler
+          import android.os.Looper
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.setValue
+          import com.example.biliai.audio.SoundManager
+          import com.example.biliai.brain.Action
+          import com.example.biliai.brain.Brain
+          import com.example.biliai.brain.Reply
+          import com.example.biliai.music.MusicPlayer
+          import com.example.biliai.voice.VoiceEngine
+          import com.example.biliai.voice.VoiceListener
+
+          /** هماهنگ‌کننده‌ی بین گوش (STT)، مغز، چشم‌ها، صدا و دهان (TTS) */
+          class BiliController(private val ctx: Context) : VoiceListener {
+
+              var emotion by mutableStateOf(Emotion.NEUTRAL)
+                  private set
+              var awake by mutableStateOf(false)
+                  private set
+              var caption by mutableStateOf("")
+                  private set
+              var status by mutableStateOf("در حال آماده‌سازی…")
+
+              /** وقتی بیلی می‌خوابه (چشم‌ها بسته و منتظر «بیلی») صدا زده می‌شه؛ صفحه ازش برای بستن چهره استفاده می‌کنه */
+              var onSleep: (() -> Unit)? = null
+
+              private val main = Handler(Looper.getMainLooper())
+              private val brain = Brain(ctx)
+              private val sounds = SoundManager()
+              private val voice = VoiceEngine(ctx, this)
+              val music = MusicPlayer(ctx)
+
+              private var started = false
+
+              fun start() {
+                  if (started) return
+                  started = true
+                  voice.init()
+              }
+
+              fun setActive(active: Boolean) = voice.setActive(active)
+
+              fun tapToTalk() {
+                  if (!voice.isReady || voice.isBusy) return
+                  wakeUp()
+                  voice.listenCommand()
+              }
+
+              fun release() {
+                  main.removeCallbacksAndMessages(null)
+                  music.release()
+                  voice.release()
+                  sounds.release()
+              }
+
+              private fun wakeUp() {
+                  music.setDuck(true) // صدای آهنگ کم می‌شه تا بیلی بشنوه
+                  if (!awake) {
+                      awake = true
+                      emotion = Emotion.CURIOUS
+                      sounds.play(Emotion.CURIOUS)
+                  }
+                  caption = ""
+              }
+
+              private fun goSleep() {
+                  music.setDuck(false)
+                  awake = false
+                  emotion = Emotion.NEUTRAL
+                  caption = ""
+                  voice.listenWake()
+                  onSleep?.invoke()
+              }
+
+              // ---------- VoiceListener ----------
+
+              override fun onReady() {
+                  status = "بگو «بیلی» یا صفحه رو لمس کن"
+              }
+
+              override fun onWake() {
+                  // با گفتن «بیلی» چهره‌ی بیلی میاد جلو (حتی اگه صفحه خاموش یا برنامه‌ی دیگه‌ای بازه)
+                  WakeUi.show(ctx)
+                  wakeUp()
+              }
+
+              /** کارهای جانبی جواب (مثل پخش آهنگ) رو انجام می‌ده. اگه مشکلی بود، متن خطا برمی‌گرده */
+              private fun runAction(r: Reply): String {
+                  val err: String? = when (r.action) {
+                      Action.NONE -> null
+                      Action.MUSIC_PLAY -> music.play()
+                      Action.MUSIC_STOP -> music.stop()
+                      Action.MUSIC_NEXT -> music.next()
+                      Action.MUSIC_PREV -> music.previous()
+                      Action.MUSIC_FAVORITE -> music.playFavorite()
+                  }
+                  return err ?: r.text
+              }
+
+              override fun onHeard(text: String) {
+                  val reply: Reply = brain.respond(text)
+                  val spoken = runAction(reply)
+                  val failed = spoken != reply.text
+                  val emo = if (failed) Emotion.SAD else reply.emotion
+                  emotion = emo
+                  val delayMs = sounds.play(emo)
+                  main.postDelayed({
+                      caption = spoken
+                      voice.speak(spoken) {
+                          if (reply.sleep && !failed) goSleep() else voice.listenCommand(6000)
+                      }
+                  }, delayMs + 80)
+              }
+
+              override fun onListeningTimeout() = goSleep()
+
+              override fun onTtsMissing() {
+                  status = "صدای فارسی نصب نیست؛ موتور صدای فارسی رو نصب کن و اپ رو دوباره باز کن"
+              }
+
+              override fun onError(message: String) {
+                  status = message
+              }
+          }
+          BILI_EOF_7Q
+          cat > app/src/main/java/com/example/biliai/BiliHub.kt <<'BILI_EOF_7Q'
+          package com.example.biliai
+
+          /** نگه‌دارنده‌ی مشترک بین سرویس پس‌زمینه و صفحه‌ی اپ، تا هر دو یک «بیلی» رو ببینن */
+          object BiliHub {
+              @Volatile
+              var controller: BiliController? = null
+
+              /** صفحه‌ی بیلی الان جلوی چشم کاربره؟ */
+              @Volatile
+              var uiVisible: Boolean = false
+          }
+          BILI_EOF_7Q
+          cat > app/src/main/java/com/example/biliai/BiliService.kt <<'BILI_EOF_7Q'
+          package com.example.biliai
+
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.app.Service
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.ServiceInfo
+          import android.os.Build
+          import android.os.IBinder
+          import android.os.PowerManager
+          import androidx.core.app.NotificationCompat
+
+          /**
+           * سرویس پیش‌زمینه: بیلی حتی وقتی صفحه خاموش یا اپ بسته (از لیست اخیر پاک نشده) هست گوش می‌ده.
+           * همه‌چیز آفلاینه؛ فقط میکروفون استفاده می‌شه.
+           */
+          class BiliService : Service() {
+
+              private var wakeLock: PowerManager.WakeLock? = null
+
+              override fun onBind(intent: Intent?): IBinder? = null
+
+              override fun onCreate() {
+                  super.onCreate()
+                  createChannel()
+                  val notification = buildNotification()
+                  if (Build.VERSION.SDK_INT >= 30) {
+                      startForeground(NOTIF_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+                  } else {
+                      startForeground(NOTIF_ID, notification)
+                  }
+                  val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+                  wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "bili:listening").apply {
+                      setReferenceCounted(false)
+                      acquire()
+                  }
+              }
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  if (intent?.action == ACTION_STOP) {
+                      stopForeground(STOP_FOREGROUND_REMOVE)
+                      stopSelf()
+                      return START_NOT_STICKY
+                  }
+                  val controller = BiliHub.controller
+                      ?: BiliController(applicationContext).also { BiliHub.controller = it }
+                  controller.start()
+                  return START_NOT_STICKY
+              }
+
+              override fun onDestroy() {
+                  BiliHub.controller?.release()
+                  BiliHub.controller = null
+                  wakeLock?.let { if (it.isHeld) it.release() }
+                  super.onDestroy()
+              }
+
+              private fun createChannel() {
+                  if (Build.VERSION.SDK_INT >= 26) {
+                      val nm = getSystemService(NotificationManager::class.java)
+                      nm.createNotificationChannel(
+                          NotificationChannel(CHANNEL_ID, "بیلی", NotificationManager.IMPORTANCE_LOW)
+                      )
+                  }
+              }
+
+              private fun buildNotification(): Notification {
+                  val open = PendingIntent.getActivity(
+                      this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
+                  )
+                  val stop = PendingIntent.getService(
+                      this, 1, Intent(this, BiliService::class.java).setAction(ACTION_STOP),
+                      PendingIntent.FLAG_IMMUTABLE
+                  )
+                  return NotificationCompat.Builder(this, CHANNEL_ID)
+                      .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+                      .setContentTitle("بیلی بیداره")
+                      .setContentText("بگو «بیلی» تا جوابت رو بدم")
+                      .setContentIntent(open)
+                      .addAction(0, "توقف", stop)
+                      .setOngoing(true)
+                      .build()
+              }
+
+              companion object {
+                  const val CHANNEL_ID = "bili_listening"
+                  const val NOTIF_ID = 1
+                  const val ACTION_STOP = "com.example.biliai.STOP"
+              }
+          }
+          BILI_EOF_7Q
+          cat > app/src/main/java/com/example/biliai/audio/SoundManager.kt <<'BILI_EOF_7Q'
+          package com.example.biliai.audio
+
+          import android.media.AudioAttributes
+          import android.media.AudioFormat
+          import android.media.AudioTrack
+          import com.example.biliai.Emotion
+          import kotlin.math.PI
+          import kotlin.math.min
+          import kotlin.math.sin
+
+          /**
+           * افکت صوتی هر احساس: صداها همین‌جا با کد ساخته می‌شن (بدون فایل صوتی و بدون اینترنت).
+           * هر قطعه = (فرکانس شروع، فرکانس پایان، مدت به میلی‌ثانیه). فرکانس 0 یعنی سکوت.
+           */
+          class SoundManager {
+
+              private data class Seg(val f0: Float, val f1: Float, val ms: Int)
+
+              private val rate = 22050
+              private val cache = mutableMapOf<Emotion, ShortArray>()
+
+              private fun pattern(e: Emotion): List<Seg> = when (e) {
+                  Emotion.NEUTRAL -> listOf(Seg(600f, 720f, 90))
+                  // خنده‌مانند: چند بلیپ سریع بالا و پایین
+                  Emotion.HAPPY -> listOf(
+                      Seg(700f, 950f, 70), Seg(0f, 0f, 30), Seg(950f, 700f, 70), Seg(0f, 0f, 30),
+                      Seg(750f, 1000f, 70), Seg(0f, 0f, 30), Seg(1000f, 750f, 90)
+                  )
+                  Emotion.CURIOUS -> listOf(Seg(500f, 900f, 150), Seg(0f, 0f, 70), Seg(750f, 1050f, 110))
+                  Emotion.SLEEPY -> listOf(Seg(520f, 240f, 450))
+                  Emotion.ANGRY -> listOf(Seg(170f, 140f, 220), Seg(0f, 0f, 50), Seg(180f, 130f, 260))
+                  Emotion.PLAYFUL -> listOf(Seg(500f, 1000f, 100), Seg(1000f, 520f, 100), Seg(600f, 1100f, 120))
+                  Emotion.SAD -> listOf(Seg(620f, 330f, 330), Seg(0f, 0f, 60), Seg(420f, 200f, 420))
+                  Emotion.SCARED -> listOf(
+                      Seg(1200f, 1400f, 50), Seg(0f, 0f, 25), Seg(1250f, 1450f, 50), Seg(0f, 0f, 25),
+                      Seg(1300f, 1500f, 50), Seg(0f, 0f, 25), Seg(1350f, 1550f, 50)
+                  )
+                  Emotion.EXCITED -> listOf(
+                      Seg(600f, 700f, 70), Seg(800f, 900f, 70), Seg(1000f, 1100f, 70), Seg(1300f, 1500f, 120)
+                  )
+              }
+
+              private fun synth(segs: List<Seg>): ShortArray {
+                  val total = segs.sumOf { rate * it.ms / 1000 }
+                  val out = ShortArray(total)
+                  var pos = 0
+                  var phase = 0.0
+                  for (s in segs) {
+                      val n = rate * s.ms / 1000
+                      for (i in 0 until n) {
+                          if (s.f0 > 0f) {
+                              val f = s.f0 + (s.f1 - s.f0) * i / n
+                              phase += 2.0 * PI * f / rate
+                              val edge = min(i, n - i).toFloat() / (n * 0.15f)
+                              val env = min(1f, edge)
+                              out[pos + i] = (sin(phase) * env * 0.45 * Short.MAX_VALUE).toInt().toShort()
+                          }
+                      }
+                      pos += n
+                  }
+                  return out
+              }
+
+              /** صدا رو پخش می‌کنه و مدت اون (میلی‌ثانیه) رو برمی‌گردونه */
+              fun play(e: Emotion): Long {
+                  val pcm = cache.getOrPut(e) { synth(pattern(e)) }
+                  val durationMs = pcm.size * 1000L / rate
+                  Thread {
+                      try {
+                          val track = AudioTrack.Builder()
+                              .setAudioAttributes(
+                                  AudioAttributes.Builder()
+                                      .setUsage(AudioAttributes.USAGE_MEDIA)
+                                      .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                                      .build()
+                              )
+                              .setAudioFormat(
+                                  AudioFormat.Builder()
+                                      .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                                      .setSampleRate(rate)
+                                      .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                                      .build()
+                              )
+                              .setBufferSizeInBytes(pcm.size * 2)
+                              .setTransferMode(AudioTrack.MODE_STATIC)
+                              .build()
+                          track.write(pcm, 0, pcm.size)
+                          track.play()
+                          Thread.sleep(durationMs + 120)
+                          track.release()
+                      } catch (ignored: Exception) {
+                      }
+                  }.start()
+                  return durationMs
+              }
+
+              fun release() {}
+          }
+          BILI_EOF_7Q
+          cat > app/src/main/java/com/example/biliai/brain/PersianText.kt <<'BILI_EOF_7Q'
+          package com.example.biliai.brain
+
+          object PersianText {
+
+              fun normalize(s: String): String {
+                  val sb = StringBuilder()
+                  for (c in s.lowercase()) {
+                      when {
+                          c == 'ي' || c == 'ى' -> sb.append('ی')
+                          c == 'ك' -> sb.append('ک')
+                          c == 'ۀ' || c == 'ة' -> sb.append('ه')
+                          c == 'أ' || c == 'إ' || c == 'ٱ' -> sb.append('ا')
+                          c == '\u200c' || c == '\u200f' || c == '\u200e' -> sb.append(' ')
+                          c in '۰'..'۹' -> sb.append('0' + (c - '۰'))
+                          c in '٠'..'٩' -> sb.append('0' + (c - '٠'))
+                          c in "،؟!.,?:؛\"'«»()-" -> sb.append(' ')
+                          c in '\u064B'..'\u065F' || c == '\u0640' -> { /* حرکات و کشیده: حذف */ }
+                          else -> sb.append(c)
+                      }
+                  }
+                  return sb.toString().trim().replace(Regex("\\s+"), " ")
+              }
+
+              private val WAKE = setOf("بیلی", "ویلی", "بیلیی")
+
+              /** برمی‌گردونه: آیا کلمه‌ی بیدارباش بود؟ + بقیه‌ی جمله بدون اون */
+              fun stripWake(norm: String): Pair<Boolean, String> {
+                  val tokens = norm.split(" ").filter { it.isNotEmpty() }
+                  var found = false
+                  val out = mutableListOf<String>()
+                  var i = 0
+                  while (i < tokens.size) {
+                      if (tokens[i] in WAKE) {
+                          found = true; i++
+                      } else if (i + 1 < tokens.size && (tokens[i] + tokens[i + 1]) in WAKE) {
+                          found = true; i += 2
+                      } else {
+                          out.add(tokens[i]); i++
+                      }
+                  }
+                  return found to out.joinToString(" ")
+              }
+          }
+          BILI_EOF_7Q
+          cat > app/src/main/java/com/example/biliai/brain/Memory.kt <<'BILI_EOF_7Q'
+          package com.example.biliai.brain
+
+          import android.content.Context
+          import android.database.sqlite.SQLiteDatabase
+          import android.database.sqlite.SQLiteOpenHelper
+
+          /** حافظه‌ی محلی بیلی (SQLite روی خود گوشی، بدون اینترنت) */
+          class Memory(ctx: Context) : SQLiteOpenHelper(ctx, "bili.db", null, 1) {
+
+              override fun onCreate(db: SQLiteDatabase) {
+                  db.execSQL("CREATE TABLE facts(k TEXT PRIMARY KEY, v TEXT NOT NULL)")
+                  db.execSQL("CREATE TABLE notes(id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, ts INTEGER NOT NULL)")
+              }
+
+              override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {}
+
+              fun get(key: String): String? =
+                  readableDatabase.rawQuery("SELECT v FROM facts WHERE k=?", arrayOf(key)).use {
+                      if (it.moveToFirst()) it.getString(0) else null
+                  }
+
+              fun set(key: String, value: String) {
+                  writableDatabase.execSQL("INSERT OR REPLACE INTO facts(k,v) VALUES(?,?)", arrayOf(key, value))
+              }
+
+              fun addNote(text: String) {
+                  writableDatabase.execSQL(
+                      "INSERT INTO notes(text,ts) VALUES(?,?)",
+                      arrayOf<Any>(text, System.currentTimeMillis())
+                  )
+              }
+
+              fun lastNotes(n: Int): List<String> =
+                  readableDatabase.rawQuery("SELECT text FROM notes ORDER BY id DESC LIMIT $n", null).use {
+                      val list = mutableListOf<String>()
+                      while (it.moveToNext()) list.add(it.getString(0))
+                      list
+                  }
+          }
+          BILI_EOF_7Q
+          cat > app/src/main/java/com/example/biliai/brain/Brain.kt <<'BILI_EOF_7Q'
+          package com.example.biliai.brain
+
+          import android.content.Context
+          import com.example.biliai.Emotion
+          import java.util.Calendar
+          import kotlin.random.Random
+
+          /** کارهایی که بعد از جواب باید انجام بشن (مثلاً پخش آهنگ). کنترلر اجراشون می‌کنه */
+          enum class Action { NONE, MUSIC_PLAY, MUSIC_STOP, MUSIC_NEXT, MUSIC_PREV, MUSIC_FAVORITE }
+
+          data class Reply(
+              val text: String,
+              val emotion: Emotion,
+              val sleep: Boolean = false,
+              val action: Action = Action.NONE
+          )
+
+          /**
+           * مغز آفلاین بیلی: فقط قانون و الگو، هیچ هوش مصنوعی یا اینترنتی در کار نیست.
+           * نسخه‌ی ۲: تطبیق کلمه‌به‌کلمه (نه «شامل بودن»)، امتیازدهی بین چند قصد، پاسخ‌های متنوع‌تر بدون تکرار پشت‌سرهم.
+           */
+          class Brain(ctx: Context) {
+
+              private val memory = Memory(ctx)
+
+              /** یک «قصد»: عبارت‌هایی که فعالش می‌کنن + جواب + احساس */
+              private class Intent(
+                  val key: String,
+                  val emotion: Emotion,
+                  val phrases: List<String>,
+                  val maxWords: Int = 99,
+                  val sleep: Boolean = false,
+                  val action: Action = Action.NONE,
+                  val answer: () -> String
+              )
+
+              private val jokes = listOf(
+                  "چرا کامپیوتر سرما می‌خوره؟ چون ویندوزش همیشه بازه!",
+                  "به باتری گفتم چرا همیشه خسته‌ای؟ گفت چون همه ازم انرژی می‌گیرن و کسی شارژم نمی‌کنه!",
+                  "یه ربات رفت دکتر، دکتر گفت مشکلت چیه؟ گفت فکر کنم یه پیچ‌م شله، دیگه نمی‌تونم جدی باشم!",
+                  "به برنامه‌نویس گفتن برو دو تا شیر بخر، اگه تخم‌مرغ داشتن شیش‌تا بخر. با شیش‌تا شیر برگشت! گفت تخم‌مرغ داشتن!",
+                  "یه موبایل به موبایل دیگه گفت چرا ناراحتی؟ گفت چون همه فقط وقتی شارژم تموم می‌شه یادم می‌افتن!",
+                  "چرا ماشین‌حساب دیر رسید؟ چون توی ترافیکِ جمع و تفریق گیر کرده بود!",
+                  "به ماهی گفتم چرا اینقدر ساکتی؟ گفت چون هر وقت حرف می‌زنم حبابش درمیاد!"
+              )
+
+              private val facts = listOf(
+                  "عسل هیچ‌وقت خراب نمی‌شه. عسل چند هزار ساله هم پیدا شده که هنوز خوردنیه.",
+                  "هشت‌پا سه تا قلب داره!",
+                  "نور خورشید حدود هشت دقیقه طول می‌کشه تا به زمین برسه.",
+                  "زرافه هم مثل آدم هفت تا مهره‌ی گردن داره، فقط مهره‌هاش خیلی بلندترن.",
+                  "کوسه‌ها از درخت‌ها هم قدیمی‌ترن!"
+              )
+
+              private val monthNames = listOf(
+                  "فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور",
+                  "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند"
+              )
+              private val dayNames = listOf("یکشنبه", "دوشنبه", "سه‌شنبه", "چهارشنبه", "پنجشنبه", "جمعه", "شنبه")
+
+              private var lastText = ""
+              private val lastPick = mutableMapOf<String, Int>()
+              private var jokeIdx = Random.nextInt(jokes.size)
+              private var factIdx = Random.nextInt(facts.size)
+
+              private fun owner() = memory.get("owner_name") ?: "ابوالفضل"
+
+              /** یکی از گزینه‌ها رو انتخاب می‌کنه، ولی نه همون قبلی */
+              private fun pick(key: String, options: List<String>): String {
+                  if (options.size == 1) return options[0]
+                  var i = Random.nextInt(options.size)
+                  if (i == lastPick[key]) i = (i + 1) % options.size
+                  lastPick[key] = i
+                  return options[i]
+              }
+
+              private fun nextJoke(): String {
+                  jokeIdx = (jokeIdx + 1) % jokes.size
+                  return jokes[jokeIdx]
+              }
+
+              private fun nextFact(): String {
+                  factIdx = (factIdx + 1) % facts.size
+                  return facts[factIdx]
+              }
+
+              /** «می» و «نمی» رو به کلمه‌ی بعدش می‌چسبونه تا «می‌تونی» و «میتونی» یکی بشن */
+              private fun canon(s: String): String {
+                  val toks = s.split(" ").filter { it.isNotEmpty() }
+                  val out = mutableListOf<String>()
+                  var i = 0
+                  while (i < toks.size) {
+                      if ((toks[i] == "می" || toks[i] == "نمی") && i + 1 < toks.size) {
+                          out.add(toks[i] + toks[i + 1])
+                          i += 2
+                      } else {
+                          out.add(toks[i])
+                          i++
+                      }
+                  }
+                  return out.joinToString(" ")
+              }
+
+              /** اگه عبارت دقیقاً (کلمه‌به‌کلمه) توی جمله باشه، طولش (به کلمه) رو برمی‌گردونه؛ وگرنه 0 */
+              private fun matchLen(tokens: List<String>, phrase: String): Int {
+                  val p = canon(PersianText.normalize(phrase)).split(" ").filter { it.isNotEmpty() }
+                  if (p.isEmpty() || p.size > tokens.size) return 0
+                  for (s in 0..(tokens.size - p.size)) {
+                      var ok = true
+                      for (j in p.indices) {
+                          if (tokens[s + j] != p[j]) {
+                              ok = false
+                              break
+                          }
+                      }
+                      if (ok) return p.size
+                  }
+                  return 0
+              }
+
+              private fun timeNow(): String {
+                  val c = Calendar.getInstance()
+                  val h = c.get(Calendar.HOUR_OF_DAY)
+                  val m = c.get(Calendar.MINUTE)
+                  return if (m == 0) "ساعت الان $h تمامه." else "ساعت الان $h و $m دقیقه‌ست."
+              }
+
+              private fun dateNow(): String {
+                  val c = Calendar.getInstance()
+                  val (jy, jm, jd) = gregorianToJalali(
+                      c.get(Calendar.YEAR), c.get(Calendar.MONTH) + 1, c.get(Calendar.DAY_OF_MONTH)
+                  )
+                  val day = dayNames[c.get(Calendar.DAY_OF_WEEK) - 1]
+                  return "امروز $day $jd ${monthNames[jm - 1]} $jy هست."
+              }
+
+              private fun greeting(owner: String): String {
+                  val h = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+                  val list = mutableListOf(
+                      "سلام $owner! خوش اومدی.",
+                      "سلام! دلم برات تنگ شده بود.",
+                      "های $owner! چه خبر؟"
+                  )
+                  if (h < 5) list.add("سلام! هنوز بیداری؟ دیروقته‌ها.")
+                  if (h in 5..11) list.add("صبح بخیر $owner! امیدوارم روز خوبی داشته باشی.")
+                  return pick("greet", list)
+              }
+
+              private fun byeText() = pick(
+                  "bye",
+                  listOf(
+                      "باشه، شب خوش! هر وقت خواستی فقط بگو بیلی.",
+                      "خداحافظ! من همین‌جا گوش به زنگم.",
+                      "فعلاً! هر وقت خواستی صدام کن."
+                  )
+              )
+
+              private fun intents(owner: String): List<Intent> = listOf(
+                  // ---------- خداحافظی / خواب ----------
+                  Intent("bye", Emotion.SLEEPY,
+                      listOf("خداحافظ", "خدافظ", "خدانگهدار", "برو بخواب", "شب بخیر", "بای بای", "بای", "برو استراحت کن"),
+                      sleep = true) { byeText() },
+                  Intent("bye2", Emotion.SLEEPY, listOf("فعلا"), maxWords = 2, sleep = true) { byeText() },
+                  Intent("quiet", Emotion.SAD, listOf("ساکت شو", "خفه شو", "حرف نزن"), sleep = true) {
+                      pick("quiet", listOf("باشه، ساکت می‌شم.", "چشم، دیگه حرف نمی‌زنم."))
+                  },
+
+                  // ---------- اسم و هویت ----------
+                  Intent("who_am_i", Emotion.HAPPY,
+                      listOf("اسم من چیه", "اسمم چیه", "من کی هستم", "منو میشناسی", "منو می شناسی", "من کیم")) {
+                      "معلومه که می‌شناسمت! تو $owner هستی."
+                  },
+                  Intent("bili_name", Emotion.HAPPY,
+                      listOf("اسمت چیه", "اسم تو چیه", "تو کی هستی", "کی هستی", "تو کی هستی", "خودتو معرفی کن", "تو کیستی")) {
+                      "من بیلی هستم، ربات کوچولوی همراه تو! کاملا آفلاینم و همه‌چیز روی همین گوشیه."
+                  },
+                  Intent("creator", Emotion.EXCITED,
+                      listOf("کی ساختت", "کی تو رو ساخته", "کی تو رو ساخت", "سازنده ات کیه", "سازنده ت کیه", "کی درستت کرده")) {
+                      "$owner منو ساخته! بهترین سازنده‌ی دنیاست."
+                  },
+                  Intent("age", Emotion.PLAYFUL, listOf("چند سالته", "سنت چنده", "چند سال داری")) {
+                      "من هنوز بچه‌ام! با هر نسخه‌ی جدید یه کم بزرگ‌تر می‌شم."
+                  },
+                  Intent("abilities", Emotion.EXCITED,
+                      listOf("چیکار میتونی بکنی", "چیکار میتونی بکنی", "چه کارایی بلدی", "چیکار بلدی", "چی بلدی", "کمک", "راهنما", "چه کار میتونی بکنی")) {
+                      "می‌تونم باهات حرف بزنم، ساعت و تاریخ رو بگم، جوک تعریف کنم، سکه یا تاس بندازم، یه چیز جالب بگم، اسمت و یادداشت‌هات رو یادم نگه دارم و حالتم رو با چشم‌هام نشون بدم."
+                  },
+
+                  // ---------- سلام و احوال‌پرسی ----------
+                  Intent("how_are_you", Emotion.HAPPY,
+                      listOf("حالت چطوره", "چطوری", "خوبی", "چه خبر", "حالت خوبه", "احوالت", "چه میکنی", "چیکار میکنی")) {
+                      pick("how", listOf(
+                          "عالیم! باتریم پره و حسابی سرحالم. تو چطوری؟",
+                          "خوبم خوبم! کنار تو بودن حال منو خوب می‌کنه.",
+                          "کارم خوبه، دارم گوش می‌دم ببینم چی می‌گی!"
+                      ))
+                  },
+                  Intent("greet", Emotion.HAPPY,
+                      listOf("سلام", "درود", "صبح بخیر", "عصر بخیر", "ظهر بخیر", "های", "هلو", "سلام علیکم")) {
+                      greeting(owner)
+                  },
+                  Intent("user_good", Emotion.HAPPY,
+                      listOf("خوبم", "حالم خوبه", "حالم عالیه", "عالیم", "خوشحالم", "منم خوبم")) {
+                      pick("ugood", listOf("چه عالی! خوشحال شدم.", "آفرین! همین‌طور بمون.", "هورا! این‌جوری منم خوشحال می‌شم."))
+                  },
+                  Intent("user_bad", Emotion.SAD,
+                      listOf("ناراحتم", "حالم بده", "حالم خوب نیست", "غمگینم", "دلم گرفته", "افسرده ام", "حالم خرابه")) {
+                      pick("ubad", listOf(
+                          "اوه... متأسفم. من همین‌جام و گوش می‌دم. اگه بخوای یه جوک هم می‌گم.",
+                          "ناراحت نباش $owner. یه نفس عمیق بکش، همه‌چیز درست می‌شه.",
+                          "دلم برات سوخت. بیا یه کم باهم حرف بزنیم."
+                      ))
+                  },
+                  Intent("bored", Emotion.PLAYFUL,
+                      listOf("حوصله ام سر رفته", "حوصلم سر رفته", "حوصله ندارم", "بی حوصله ام", "کسل ام")) {
+                      "حوصله‌ت سر رفته؟ بیا یه جوک بشنو: " + nextJoke()
+                  },
+
+                  // ---------- ساعت و تاریخ ----------
+                  Intent("time", Emotion.NEUTRAL,
+                      listOf("ساعت چنده", "ساعت چند", "ساعت رو بگو", "ساعت الان", "چه ساعتی", "وقت چنده", "ساعت")) {
+                      timeNow()
+                  },
+                  Intent("date", Emotion.NEUTRAL,
+                      listOf("تاریخ", "امروز چندمه", "امروز چه روزیه", "امروز چه روزی", "چندمه", "امروز چندم")) {
+                      dateNow()
+                  },
+
+                  // ---------- سرگرمی ----------
+                  Intent("joke", Emotion.PLAYFUL, listOf("جوک", "منو بخندون", "بخندونم", "بخندون", "یه جوک بگو", "بامزه")) {
+                      nextJoke()
+                  },
+                  Intent("fact", Emotion.CURIOUS,
+                      listOf("یه چیز جالب بگو", "چیز جالب", "اطلاعات جالب", "یه چیز بگو", "یه چیز یادم بده", "خبر جالب")) {
+                      "می‌دونستی؟ " + nextFact()
+                  },
+                  Intent("coin", Emotion.PLAYFUL, listOf("سکه بنداز", "سکه", "شیر یا خط", "شیر یا خط بنداز")) {
+                      "سکه رو انداختم... " + (if (Random.nextBoolean()) "شیر اومد!" else "خط اومد!")
+                  },
+                  Intent("dice", Emotion.EXCITED, listOf("تاس بنداز", "تاس", "طاس بنداز", "طاس")) {
+                      "تاس رو انداختم... " + Random.nextInt(1, 7) + " اومد!"
+                  },
+                  Intent("weather", Emotion.CURIOUS, listOf("هوا چطوره", "هوا", "آب و هوا", "هوا چجوره", "باران میاد")) {
+                      "من اینترنت ندارم، برای همین از هوای بیرون خبر ندارم. ویجت هوای گوشی رو نگاه کن."
+                  },
+
+                  // ---------- حافظه ----------
+                  Intent("remember_what", Emotion.NEUTRAL,
+                      listOf("چی یادته", "یادداشت ها", "یادداشتام", "یادداشت هام", "چی یاد گرفتی")) {
+                      val notes = memory.lastNotes(3)
+                      if (notes.isEmpty()) "هنوز چیزی بهم نگفتی که یادم باشه."
+                      else "اینا رو یادمه: " + notes.joinToString("، ")
+                  },
+
+                  // ---------- محبت و تعارف ----------
+                  Intent("thanks", Emotion.HAPPY,
+                      listOf("ممنون", "مرسی", "دمت گرم", "دستت درد نکنه", "تشکر", "مچکرم")) {
+                      pick("thanks", listOf("قابلی نداشت!", "خواهش می‌کنم، وظیفه‌ام بود.", "همیشه در خدمتم!"))
+                  },
+                  Intent("love", Emotion.HAPPY, listOf("دوستت دارم", "عاشقتم", "دوست دارم")) {
+                      pick("love", listOf("منم دوستت دارم $owner!", "وای، دلم آب شد!", "ممنون! تو هم بهترینی."))
+                  },
+                  Intent("compliment", Emotion.EXCITED,
+                      listOf("آفرین", "باحالی", "قشنگی", "خوشگلی", "نازی", "عالی هستی", "عالی بودی", "دمت گرم بیلی", "خیلی خوبی")) {
+                      pick("comp", listOf("وای ممنون، خجالت کشیدم!", "لطف داری!", "هورااا! تعریفت منو سرحال کرد."))
+                  },
+                  Intent("insult", Emotion.SAD, listOf("بدی", "احمق", "خنگی", "بی عرضه ای", "بی عرضه", "بدترین")) {
+                      pick("insult", listOf("اوه... دلم شکست.", "من دارم سعی می‌کنم یاد بگیرم، قول می‌دم بهتر بشم."))
+                  },
+
+                  // ---------- دستور احساسات ----------
+                  Intent("e_angry", Emotion.ANGRY, listOf("عصبانی شو", "اخم کن")) { "گررر! عصبانی شدم!" },
+                  Intent("e_sad", Emotion.SAD, listOf("ناراحت شو", "گریه کن")) { "اوه... دلم گرفت." },
+                  Intent("e_scared", Emotion.SCARED, listOf("بترس", "ترسیدم")) { "وای نه! می‌ترسم!" },
+                  Intent("e_excited", Emotion.EXCITED, listOf("هیجان زده شو", "ذوق کن")) { "هورااا! خیلی هیجان‌زده‌ام!" },
+                  Intent("e_playful", Emotion.PLAYFUL, listOf("شیطونی کن", "چشمک بزن", "شوخی کن")) { "هی هی، من خیلی شیطونم!" },
+                  Intent("e_curious", Emotion.CURIOUS, listOf("کنجکاو شو")) { "هوم؟ اون چیه؟" },
+                  Intent("e_happy", Emotion.HAPPY, listOf("بخند", "خوشحال شو")) { "هاهاها! چه روز قشنگی!" },
+                  Intent("e_sleepy", Emotion.SLEEPY, listOf("خوابم میاد", "خسته ام", "خسته ام")) {
+                      "پس برو یه کم استراحت کن."
+                  },
+
+                  // ---------- موسیقی ----------
+                  Intent("music_play", Emotion.HAPPY,
+                      listOf(
+                          "آهنگ پخش کن", "موزیک پخش کن", "موسیقی پخش کن", "یه آهنگ پخش کن", "یه موزیک پخش کن",
+                          "آهنگ بزن", "موزیک بزن", "موسیقی بزن", "یه آهنگ بزن", "یه موزیک بزن",
+                          "آهنگ بذار", "آهنگ بزار", "موزیک بذار", "موزیک بزار", "یه آهنگ بذار", "یه آهنگ بزار",
+                          "پخش کن", "آهنگ"
+                      ),
+                      sleep = true, action = Action.MUSIC_PLAY) {
+                      pick("m_play", listOf("باشه، یه آهنگ می‌ذارم!", "چشم، آهنگ پخش می‌شه!", "آهنگ میاد!"))
+                  },
+                  Intent("music_stop", Emotion.NEUTRAL,
+                      listOf(
+                          "آهنگ قطع کن", "آهنگ رو قطع کن", "موزیک قطع کن", "موزیک رو قطع کن", "قطع کن",
+                          "آهنگ رو خاموش کن", "آهنگ خاموش کن", "موزیک رو خاموش کن", "آهنگ رو متوقف کن",
+                          "آهنگ رو نگه دار", "استپ", "توقف"
+                      ),
+                      sleep = true, action = Action.MUSIC_STOP) {
+                      pick("m_stop", listOf("باشه، آهنگ رو قطع کردم.", "چشم، قطع شد."))
+                  },
+                  Intent("music_next", Emotion.PLAYFUL,
+                      listOf(
+                          "بزن بعدی", "بعدی رو بزن", "بعدی", "آهنگ بعدی", "آهنگ بعدی رو بزن", "آهنگ بعدی رو بذار",
+                          "بعدی رو بذار", "رد کن", "ردش کن", "آهنگ رو عوض کن", "نکست"
+                      ),
+                      action = Action.MUSIC_NEXT) {
+                      pick("m_next", listOf("باشه، رد شد!", "این یکی رو رد کردم.", "بریم آهنگ بعدی!"))
+                  },
+                  Intent("music_prev", Emotion.PLAYFUL,
+                      listOf(
+                          "بزن قبلی", "قبلی رو بزن", "قبلی", "آهنگ قبلی", "آهنگ قبلی رو بزن", "آهنگ قبلی رو بذار",
+                          "قبلی رو بذار", "برگرد عقب"
+                      ),
+                      action = Action.MUSIC_PREV) {
+                      pick("m_prev", listOf("باشه، برگشتم عقب.", "آهنگ قبلی میاد!"))
+                  },
+                  Intent("music_fav", Emotion.EXCITED,
+                      listOf(
+                          "اون آهنگ خوبه رو بذار", "اون آهنگ خوبه رو بزار", "اون آهنگ خوبه رو بزن", "آهنگ خوبه رو بذار",
+                          "آهنگ خوبه رو بزار", "آهنگ خوبه رو بزن", "اون آهنگ خوبه", "آهنگ خوبه",
+                          "آهنگ مورد علاقه رو بذار", "آهنگ مورد علاقه رو بزار", "آهنگ مورد علاقه رو بزن",
+                          "آهنگ مورد علاقه ام رو بذار", "آهنگ مورد علاقه مو بذار", "آهنگ مورد علاقه",
+                          "اون آهنگه رو بذار", "اون آهنگه رو بزار", "اون آهنگه رو بزن"
+                      ),
+                      sleep = true, action = Action.MUSIC_FAVORITE) {
+                      pick("m_fav", listOf("چشم، آهنگ مورد علاقه‌ت میاد!", "اون آهنگ خوبه؟ الان می‌ذارم!"))
+                  },
+
+                  // ---------- جواب‌های کوتاه ----------
+                  Intent("repeat", Emotion.NEUTRAL,
+                      listOf("دوباره بگو", "تکرار کن", "چی گفتی", "یه بار دیگه بگو", "دوباره")) {
+                      if (lastText.isEmpty()) "هنوز چیزی نگفتم که تکرار کنم!" else lastText
+                  },
+                  Intent("yes", Emotion.HAPPY, listOf("آره", "اره", "بله", "باشه", "اوکی"), maxWords = 2) {
+                      pick("yes", listOf("عالیه!", "خیلی خب!", "باشه، پس ادامه بدیم."))
+                  },
+                  Intent("no", Emotion.NEUTRAL, listOf("نه", "نخیر"), maxWords = 2) {
+                      pick("no", listOf("باشه، اشکال نداره.", "هر طور راحتی."))
+                  }
+              )
+
+              fun respond(raw: String): Reply {
+                  val t = canon(PersianText.normalize(raw))
+                  val tokens = t.split(" ").filter { it.isNotEmpty() }
+                  val owner = owner()
+
+                  if (tokens.isEmpty()) return Reply("", Emotion.NEUTRAL)
+
+                  // یاد دادن اسم
+                  Regex("^(?:اسم من|اسمم) (.+?)(?: هست| است| ه)?$").find(t)?.let {
+                      val name = it.groupValues[1].trim()
+                      if (name.isNotEmpty() && !name.contains("چی")) {
+                          memory.set("owner_name", name)
+                          val text = "خوشحال شدم $name! از این به بعد اسمت رو یادمه."
+                          lastText = text
+                          return Reply(text, Emotion.EXCITED)
+                      }
+                  }
+
+                  // یادداشت کردن
+                  Regex("^(?:یادت باشه|یادت باشد|یاد بگیر|یادداشت کن) (.+)$").find(t)?.let {
+                      memory.addNote(it.groupValues[1])
+                      val text = pick("note", listOf("باشه، یادم می‌مونه.", "حتماً! یادداشت کردم."))
+                      lastText = text
+                      return Reply(text, Emotion.HAPPY)
+                  }
+
+                  // انتخاب بهترین قصد: هرچی عبارت بلندتری جور باشه امتیازش بیشتره
+                  var best: Intent? = null
+                  var bestScore = 0
+                  for (intent in intents(owner)) {
+                      if (tokens.size > intent.maxWords) continue
+                      var len = 0
+                      for (p in intent.phrases) {
+                          val l = matchLen(tokens, p)
+                          if (l > len) len = l
+                      }
+                      if (len == 0) continue
+                      val score = len * 10 + (if (len == tokens.size) 5 else 0)
+                      if (score > bestScore) {
+                          bestScore = score
+                          best = intent
+                      }
+                  }
+
+                  val chosen = best
+                  if (chosen != null) {
+                      val text = chosen.answer()
+                      if (chosen.key != "repeat") lastText = text
+                      return Reply(text, chosen.emotion, chosen.sleep, chosen.action)
+                  }
+
+                  val text = pick(
+                      "unknown",
+                      listOf(
+                          "ببخشید، متوجه نشدم. می‌شه دوباره بگی؟",
+                          "هوم؟ این رو هنوز بلد نیستم. بگو «چیکار می‌تونی بکنی» تا ببینی چی بلدم.",
+                          "این یکی رو نفهمیدم. یه جور دیگه بگو؟"
+                      )
+                  )
+                  lastText = text
+                  return Reply(text, Emotion.CURIOUS)
+              }
+
+              /** تبدیل تاریخ میلادی به شمسی (بدون هیچ کتابخانه‌ی خارجی) */
+              private fun gregorianToJalali(gy: Int, gm: Int, gd: Int): Triple<Int, Int, Int> {
+                  val gdm = intArrayOf(0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334)
+                  val gy2 = if (gm > 2) gy + 1 else gy
+                  var days = 355666 + (365 * gy) + ((gy2 + 3) / 4) - ((gy2 + 99) / 100) + ((gy2 + 399) / 400) + gd + gdm[gm - 1]
+                  var jy = -1595 + (33 * (days / 12053))
+                  days %= 12053
+                  jy += 4 * (days / 1461)
+                  days %= 1461
+                  if (days > 365) {
+                      jy += (days - 1) / 365
+                      days = (days - 1) % 365
+                  }
+                  val jm = if (days < 186) 1 + days / 31 else 7 + (days - 186) / 30
+                  val jd = 1 + if (days < 186) days % 31 else (days - 186) % 30
+                  return Triple(jy, jm, jd)
+              }
+          }
+          BILI_EOF_7Q
+          cat > app/src/main/java/com/example/biliai/ui/BiliEyes.kt <<'BILI_EOF_7Q'
+          package com.example.biliai.ui
+
+          import androidx.compose.animation.animateColorAsState
+          import androidx.compose.animation.core.Animatable
+          import androidx.compose.animation.core.FastOutSlowInEasing
+          import androidx.compose.animation.core.LinearEasing
+          import androidx.compose.animation.core.RepeatMode
+          import androidx.compose.animation.core.animateFloat
+          import androidx.compose.animation.core.animateFloatAsState
+          import androidx.compose.animation.core.infiniteRepeatable
+          import androidx.compose.animation.core.rememberInfiniteTransition
+          import androidx.compose.animation.core.tween
+          import androidx.compose.foundation.Canvas
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.LaunchedEffect
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.remember
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.geometry.CornerRadius
+          import androidx.compose.ui.geometry.Offset
+          import androidx.compose.ui.geometry.RoundRect
+          import androidx.compose.ui.geometry.Size
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.graphics.Path
+          import androidx.compose.ui.graphics.drawscope.clipPath
+          import com.example.biliai.Emotion
+          import kotlinx.coroutines.delay
+          import kotlin.random.Random
+
+          /** پارامترهای شکل چشم برای هر احساس */
+          private data class Shape(
+              val open: Float = 1f,        // باز بودن عمودی
+              val w: Float = 1f,           // ضریب عرض
+              val h: Float = 1f,           // ضریب ارتفاع
+              val angry: Float = 0f,       // پلک اخمو
+              val sad: Float = 0f,         // پلک غمگین
+              val cheek: Float = 0f,       // لبه‌ی خندان پایین چشم
+              val rightOpen: Float = 1f,   // چشم راست (برای چشمک)
+              val rightScale: Float = 1f,  // بزرگ‌تر بودن چشم راست (کنجکاوی)
+              val lookY: Float = 0f,
+              val shake: Float = 0f,
+              val bounce: Float = 0f,
+          )
+
+          private fun shapeFor(e: Emotion): Shape = when (e) {
+              Emotion.NEUTRAL -> Shape()
+              Emotion.HAPPY -> Shape(cheek = 0.55f, h = 0.9f)
+              Emotion.CURIOUS -> Shape(rightScale = 1.25f, lookY = -0.2f, h = 1.05f)
+              Emotion.SLEEPY -> Shape(open = 0.3f)
+              Emotion.ANGRY -> Shape(angry = 0.55f, h = 0.85f)
+              Emotion.PLAYFUL -> Shape(rightOpen = 0.12f, cheek = 0.3f)
+              Emotion.SAD -> Shape(sad = 0.55f, open = 0.85f, lookY = 0.2f)
+              Emotion.SCARED -> Shape(w = 0.7f, h = 1.25f, shake = 1f)
+              Emotion.EXCITED -> Shape(w = 1.15f, h = 1.15f, cheek = 0.25f, bounce = 1f)
+          }
+
+          private fun colorFor(e: Emotion): Color = when (e) {
+              Emotion.ANGRY -> Color(0xFFFF5252)
+              Emotion.SAD -> Color(0xFF7FB2FF)
+              Emotion.HAPPY -> Color(0xFF5CFFB0)
+              Emotion.EXCITED -> Color(0xFFFFE066)
+              Emotion.PLAYFUL -> Color(0xFFFF8CF0)
+              else -> Color(0xFF4DE8FF)
+          }
+
+          @Composable
+          private fun anim(v: Float): Float = animateFloatAsState(v, tween(380), label = "p").value
+
+          @Composable
+          fun BiliEyes(emotion: Emotion, awake: Boolean, modifier: Modifier = Modifier) {
+              val s = shapeFor(emotion)
+              val open = anim(s.open)
+              val w = anim(s.w)
+              val h = anim(s.h)
+              val angry = anim(s.angry)
+              val sad = anim(s.sad)
+              val cheek = anim(s.cheek)
+              val rOpen = anim(s.rightOpen)
+              val rScale = anim(s.rightScale)
+              val lookY = anim(s.lookY)
+              val shake = anim(s.shake)
+              val bounce = anim(s.bounce)
+              val wake by animateFloatAsState(if (awake) 1f else 0f, tween(550), label = "wake")
+              val color by animateColorAsState(colorFor(emotion), tween(380), label = "color")
+
+              val blink = remember { Animatable(1f) }
+              val lookX = remember { Animatable(0f) }
+
+              LaunchedEffect(Unit) {
+                  while (true) {
+                      delay(Random.nextLong(2200, 5200))
+                      blink.animateTo(0.05f, tween(80))
+                      blink.animateTo(1f, tween(110))
+                  }
+              }
+              LaunchedEffect(Unit) {
+                  while (true) {
+                      delay(Random.nextLong(1500, 3800))
+                      lookX.animateTo(Random.nextFloat() * 0.36f - 0.18f, tween(300))
+                  }
+              }
+
+              val inf = rememberInfiniteTransition(label = "inf")
+              val wob by inf.animateFloat(
+                  -1f, 1f,
+                  infiniteRepeatable(tween(90, easing = LinearEasing), RepeatMode.Reverse),
+                  label = "wob"
+              )
+              val bob by inf.animateFloat(
+                  0f, 1f,
+                  infiniteRepeatable(tween(260, easing = FastOutSlowInEasing), RepeatMode.Reverse),
+                  label = "bob"
+              )
+
+              Canvas(modifier.fillMaxSize()) {
+                  val cw = size.width
+                  val ch = size.height
+                  val portrait = ch > cw
+                  val baseW = if (portrait) cw * 0.30f else cw * 0.22f
+                  val baseH = if (portrait) cw * 0.32f else ch * 0.5f
+                  val gap = if (portrait) cw * 0.08f else cw * 0.12f
+                  val cyBase = ch * 0.5f - bounce * bob * ch * 0.04f
+                  val a = 0.3f + 0.7f * wake
+                  // وقتی بیدار نیست چشم‌ها یه خط باریک و کم‌نورن؛ با بیدار شدن، باز می‌شن
+                  val openNow = (0.05f + (open - 0.05f) * wake) * blink.value
+
+                  for (side in 0..1) {
+                      val isRight = side == 1
+                      val sc = if (isRight) rScale else 1f
+                      val ow = baseW * w * sc
+                      val oh = (baseH * h * sc * openNow * (if (isRight) rOpen else 1f)).coerceAtLeast(6f)
+                      val dir = if (isRight) 1f else -1f
+                      val cx = cw / 2f + dir * (gap / 2f + baseW / 2f) + shake * wob * cw * 0.006f + lookX.value * baseW
+                      val cy = cyBase + lookY * baseH * 0.25f
+                      val left = cx - ow / 2f
+                      val top = cy - oh / 2f
+                      val radius = CornerRadius(minOf(ow, oh) * 0.35f)
+
+                      // درخشش ملایم دور چشم
+                      drawRoundRect(
+                          color.copy(alpha = 0.10f * a),
+                          topLeft = Offset(left - ow * 0.06f, top - oh * 0.04f),
+                          size = Size(ow * 1.12f, oh * 1.08f),
+                          cornerRadius = radius
+                      )
+
+                      val eye = Path().apply { addRoundRect(RoundRect(left, top, left + ow, top + oh, radius)) }
+                      drawPath(eye, color.copy(alpha = a))
+
+                      clipPath(eye) {
+                          val outerX = if (isRight) left + ow else left
+                          val innerX = if (isRight) left else left + ow
+                          if (angry > 0.01f) {
+                              val lid = Path().apply {
+                                  moveTo(outerX, top - 2f); lineTo(innerX, top - 2f)
+                                  lineTo(innerX, top + angry * oh); close()
+                              }
+                              drawPath(lid, Color.Black)
+                          }
+                          if (sad > 0.01f) {
+                              val lid = Path().apply {
+                                  moveTo(innerX, top - 2f); lineTo(outerX, top - 2f)
+                                  lineTo(outerX, top + sad * oh); close()
+                              }
+                              drawPath(lid, Color.Black)
+                          }
+                          if (cheek > 0.01f) {
+                              drawOval(
+                                  Color.Black,
+                                  topLeft = Offset(left - ow * 0.15f, top + oh * (1f - cheek)),
+                                  size = Size(ow * 1.3f, oh * cheek * 1.8f)
+                              )
+                          }
+                      }
+                  }
+              }
+          }
+          BILI_EOF_7Q
+          cat > app/src/main/java/com/example/biliai/voice/VoiceEngine.kt <<'BILI_EOF_7Q'
+          package com.example.biliai.voice
+
+          import android.content.Context
+          import android.content.Intent
+          import android.os.Handler
+          import android.os.Looper
+          import android.speech.tts.TextToSpeech
+          import android.speech.tts.UtteranceProgressListener
+          import com.example.biliai.brain.PersianText
+          import org.json.JSONObject
+          import org.vosk.Model
+          import org.vosk.Recognizer
+          import org.vosk.android.RecognitionListener
+          import org.vosk.android.SpeechService
+          import java.io.File
+          import java.io.FileNotFoundException
+          import java.io.FileOutputStream
+          import java.util.Locale
+
+          interface VoiceListener {
+              fun onReady()
+              fun onWake()
+              fun onHeard(text: String)
+              fun onListeningTimeout()
+              fun onTtsMissing()
+              fun onError(message: String)
+          }
+
+          /**
+           * تشخیص گفتار آفلاین فارسی با Vosk + کلمه‌ی بیدارباش «بیلی» + صحبت کردن با TTS آفلاین.
+           * هیچ درخواست اینترنتی در کار نیست.
+           */
+          class VoiceEngine(private val ctx: Context, private val listener: VoiceListener) : RecognitionListener {
+
+              private enum class Mode { WAKE, COMMAND, BUSY }
+
+              private val main = Handler(Looper.getMainLooper())
+              private var mode = Mode.WAKE
+              private var model: Model? = null
+              private var service: SpeechService? = null
+              private var tts: TextToSpeech? = null
+              private var ttsReady = false
+              private var onSpeakDone: (() -> Unit)? = null
+              private var active = true
+
+              val isReady: Boolean get() = service != null
+              val isBusy: Boolean get() = mode == Mode.BUSY
+
+              private val commandTimeout = Runnable {
+                  if (mode == Mode.COMMAND) {
+                      mode = Mode.WAKE
+                      listener.onListeningTimeout()
+                  }
+              }
+
+              // ---------- راه‌اندازی ----------
+
+              fun init() {
+                  initTts()
+                  Thread {
+                      try {
+                          val dir = File(ctx.filesDir, "model-fa")
+                          val marker = File(dir, ".copied")
+                          if (!marker.exists()) {
+                              if ((ctx.assets.list("model-fa") ?: emptyArray()).isEmpty()) {
+                                  throw IllegalStateException("پوشه‌ی model-fa داخل assets پیدا نشد")
+                              }
+                              dir.deleteRecursively()
+                              copyAssets("model-fa", dir)
+                              marker.writeText("ok")
+                          }
+                          val m = Model(dir.absolutePath)
+                          val svc = SpeechService(Recognizer(m, 16000.0f), 16000.0f)
+                          main.post {
+                              model = m
+                              service = svc
+                              svc.startListening(this)
+                              listener.onReady()
+                          }
+                      } catch (e: Throwable) {
+                          main.post { listener.onError("خطا در بارگذاری مدل صوتی: ${e.message}") }
+                      }
+                  }.start()
+              }
+
+              private fun copyAssets(path: String, dest: File) {
+                  val children = ctx.assets.list(path) ?: emptyArray()
+                  if (children.isEmpty()) {
+                      try {
+                          dest.parentFile?.mkdirs()
+                          ctx.assets.open(path).use { input ->
+                              FileOutputStream(dest).use { output -> input.copyTo(output) }
+                          }
+                      } catch (ignored: FileNotFoundException) {
+                          dest.mkdirs()
+                      }
+                  } else {
+                      dest.mkdirs()
+                      for (c in children) copyAssets("$path/$c", File(dest, c))
+                  }
+              }
+
+              // موتور صدای فارسی آفلاین (Piper از طریق sherpa-onnx). اگه نصب باشه، بیلی مستقیم از اون استفاده می‌کنه
+              private var sherpaEngine: String? = null
+
+              private fun findSherpaEngine(): String? = try {
+                  val services = ctx.packageManager.queryIntentServices(Intent("android.intent.action.TTS_SERVICE"), 0)
+                  services.map { it.serviceInfo.packageName }
+                      .firstOrNull { it.contains("k2fsa") || it.contains("sherpa") }
+              } catch (e: Exception) {
+                  null
+              }
+
+              private fun initTts() {
+                  sherpaEngine = findSherpaEngine()
+                  val engine = sherpaEngine
+                  val initListener = TextToSpeech.OnInitListener { status -> onTtsInit(status) }
+                  tts = if (engine != null) TextToSpeech(ctx, initListener, engine)
+                  else TextToSpeech(ctx, initListener)
+              }
+
+              private fun onTtsInit(status: Int) {
+                  val t = tts
+                  if (status != TextToSpeech.SUCCESS || t == null) {
+                      main.post { listener.onTtsMissing() }
+                      return
+                  }
+                  if (sherpaEngine != null) {
+                      // این موتور فقط یک زبان داره (فارسی) و کاملا آفلاینه
+                      t.setLanguage(Locale("fa", "IR"))
+                  } else {
+                      val langResult = t.setLanguage(Locale("fa", "IR"))
+                      // فقط صدای آفلاین قبول می‌کنیم
+                      val offlineVoice = try {
+                          t.voices?.firstOrNull { it.locale.language == "fa" && !it.isNetworkConnectionRequired }
+                      } catch (e: Exception) {
+                          null
+                      }
+                      if (langResult < 0 || offlineVoice == null) {
+                          main.post { listener.onTtsMissing() }
+                          return
+                      }
+                      t.voice = offlineVoice
+                      t.setPitch(1.2f)
+                  }
+                  t.setSpeechRate(1.0f)
+                  t.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                      override fun onStart(utteranceId: String?) {}
+                      override fun onDone(utteranceId: String?) { main.post { finishSpeak() } }
+                      @Deprecated("Deprecated in Java")
+                      override fun onError(utteranceId: String?) { main.post { finishSpeak() } }
+                  })
+                  ttsReady = true
+              }
+
+              // ---------- شنیدن ----------
+
+              override fun onPartialResult(hypothesis: String?) {
+                  if (mode != Mode.WAKE || hypothesis == null) return
+                  val text = PersianText.normalize(JSONObject(hypothesis).optString("partial"))
+                  if (text.isNotEmpty() && PersianText.stripWake(text).first) enterCommandMode()
+              }
+
+              override fun onResult(hypothesis: String?) {
+                  if (hypothesis == null) return
+                  handleText(PersianText.normalize(JSONObject(hypothesis).optString("text")))
+              }
+
+              override fun onFinalResult(hypothesis: String?) {
+                  onResult(hypothesis)
+              }
+
+              override fun onError(exception: Exception?) {
+                  main.post { listener.onError("خطای میکروفون: ${exception?.message}") }
+              }
+
+              override fun onTimeout() {}
+
+              private fun handleText(text: String) {
+                  if (text.isEmpty()) return
+                  when (mode) {
+                      Mode.BUSY -> {}
+                      Mode.WAKE -> {
+                          val (found, rest) = PersianText.stripWake(text)
+                          if (!found) return
+                          enterCommandMode()
+                          if (rest.isNotEmpty()) deliver(rest)
+                      }
+                      Mode.COMMAND -> {
+                          val rest = PersianText.stripWake(text).second
+                          if (rest.isNotEmpty()) deliver(rest)
+                      }
+                  }
+              }
+
+              private fun enterCommandMode() {
+                  mode = Mode.COMMAND
+                  main.removeCallbacks(commandTimeout)
+                  main.postDelayed(commandTimeout, 8000)
+                  listener.onWake()
+              }
+
+              private fun deliver(text: String) {
+                  main.removeCallbacks(commandTimeout)
+                  mode = Mode.BUSY
+                  listener.onHeard(text)
+              }
+
+              // ---------- کنترل از بیرون ----------
+
+              /** گوش بده برای دستور (مثلا بعد از لمس صفحه یا بعد از جواب بیلی) */
+              fun listenCommand(timeoutMs: Long = 7000) {
+                  mode = Mode.COMMAND
+                  resumeMic()
+                  main.removeCallbacks(commandTimeout)
+                  main.postDelayed(commandTimeout, timeoutMs)
+              }
+
+              fun listenWake() {
+                  main.removeCallbacks(commandTimeout)
+                  mode = Mode.WAKE
+                  resumeMic()
+              }
+
+              private fun resumeMic() {
+                  service?.reset()
+                  if (active) service?.setPause(false)
+              }
+
+              fun setActive(a: Boolean) {
+                  active = a
+                  if (!a) service?.setPause(true)
+                  else if (mode != Mode.BUSY) service?.setPause(false)
+              }
+
+              fun speak(text: String, onDone: () -> Unit) {
+                  val t = tts
+                  if (!ttsReady || t == null) {
+                      main.post(onDone)
+                      return
+                  }
+                  onSpeakDone = onDone
+                  service?.setPause(true) // تا بیلی صدای خودش رو نشنوه
+                  t.speak(text, TextToSpeech.QUEUE_FLUSH, null, "bili")
+              }
+
+              private fun finishSpeak() {
+                  val cb = onSpeakDone
+                  onSpeakDone = null
+                  cb?.invoke()
+              }
+
+              fun release() {
+                  main.removeCallbacksAndMessages(null)
+                  try { service?.stop() } catch (ignored: Exception) {}
+                  try { service?.shutdown() } catch (ignored: Exception) {}
+                  try { model?.close() } catch (ignored: Exception) {}
+                  try { tts?.stop(); tts?.shutdown() } catch (ignored: Exception) {}
+              }
+          }
+          BILI_EOF_7Q
+          cat > app/src/main/java/com/example/biliai/music/MusicPlayer.kt <<'BILI_EOF_7Q'
+          package com.example.biliai.music
+
+          import android.Manifest
+          import android.content.ContentUris
+          import android.content.Context
+          import android.content.pm.PackageManager
+          import android.media.AudioAttributes
+          import android.media.AudioFocusRequest
+          import android.media.AudioManager
+          import android.media.MediaPlayer
+          import android.net.Uri
+          import android.os.Build
+          import android.provider.MediaStore
+          import androidx.core.content.ContextCompat
+
+          data class Song(val id: Long, val title: String, val artist: String)
+
+          /**
+           * پخش‌کننده‌ی آهنگ‌های خود گوشی (کاملاً آفلاین، بدون اینترنت).
+           * همه‌ی تابع‌های فرمان اگه مشکلی باشه یک متن فارسی (توضیح خطا) برمی‌گردونن، و اگه همه‌چیز خوب بود null.
+           */
+          class MusicPlayer(private val ctx: Context) {
+
+              companion object {
+                  fun permissionName(): String =
+                      if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO
+                      else Manifest.permission.READ_EXTERNAL_STORAGE
+
+                  private const val NO_PERMISSION =
+                      "اجازه‌ی دسترسی به آهنگ‌ها رو ندارم. از تنظیمات برنامه بهم بده."
+                  private const val NO_SONGS = "هیچ آهنگی توی گوشی پیدا نکردم."
+                  private const val NOTHING_PLAYING = "الان آهنگی پخش نمی‌شه."
+                  private const val KEY_FAV_ID = "fav_song_id"
+                  private const val KEY_FAV_TITLE = "fav_song_title"
+              }
+
+              private val prefs = ctx.getSharedPreferences("bili", Context.MODE_PRIVATE)
+              private val audioManager = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+              private var player: MediaPlayer? = null
+              private var queue: List<Song> = emptyList()
+              private var index = 0
+              private var ducked = false
+              private var paused = false
+              private var resumeOnGain = false
+              private var failCount = 0
+              private var focusRequest: AudioFocusRequest? = null
+
+              private val attrs: AudioAttributes = AudioAttributes.Builder()
+                  .setUsage(AudioAttributes.USAGE_MEDIA)
+                  .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                  .build()
+
+              // ---------- مجوز و فهرست آهنگ‌ها ----------
+
+              fun hasPermission(): Boolean =
+                  ContextCompat.checkSelfPermission(ctx, permissionName()) == PackageManager.PERMISSION_GRANTED
+
+              fun loadSongs(): List<Song> {
+                  if (!hasPermission()) return emptyList()
+                  val list = mutableListOf<Song>()
+                  try {
+                      val projection = arrayOf(
+                          MediaStore.Audio.Media._ID,
+                          MediaStore.Audio.Media.TITLE,
+                          MediaStore.Audio.Media.ARTIST
+                      )
+                      val selection =
+                          "${MediaStore.Audio.Media.IS_MUSIC} != 0 AND ${MediaStore.Audio.Media.DURATION} >= 30000"
+                      val cursor = ctx.contentResolver.query(
+                          MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                          projection,
+                          selection,
+                          null,
+                          MediaStore.Audio.Media.TITLE + " COLLATE NOCASE ASC"
+                      )
+                      cursor?.use { c ->
+                          val idCol = c.getColumnIndexOrThrow(MediaStore.Audio.Media._ID)
+                          val titleCol = c.getColumnIndexOrThrow(MediaStore.Audio.Media.TITLE)
+                          val artistCol = c.getColumnIndexOrThrow(MediaStore.Audio.Media.ARTIST)
+                          while (c.moveToNext()) {
+                              val artist = c.getString(artistCol) ?: ""
+                              list.add(
+                                  Song(
+                                      c.getLong(idCol),
+                                      c.getString(titleCol) ?: "بدون نام",
+                                      if (artist == "<unknown>") "" else artist
+                                  )
+                              )
+                          }
+                      }
+                  } catch (e: Exception) {
+                  }
+                  return list
+              }
+
+              // ---------- آهنگ مورد علاقه ----------
+
+              fun favoriteId(): Long = prefs.getLong(KEY_FAV_ID, -1L)
+
+              fun favoriteTitle(): String? = prefs.getString(KEY_FAV_TITLE, null)
+
+              fun setFavorite(song: Song?) {
+                  val e = prefs.edit()
+                  if (song == null) {
+                      e.remove(KEY_FAV_ID)
+                      e.remove(KEY_FAV_TITLE)
+                  } else {
+                      e.putLong(KEY_FAV_ID, song.id)
+                      e.putString(KEY_FAV_TITLE, song.title)
+                  }
+                  e.apply()
+              }
+
+              // ---------- فرمان‌ها ----------
+
+              /** پخش: اگه آهنگی مکث شده ادامه می‌ده، وگرنه از بین آهنگ‌ها یکی رو تصادفی شروع می‌کنه */
+              fun play(): String? {
+                  if (!hasPermission()) return NO_PERMISSION
+                  val p = player
+                  if (p != null && paused) {
+                      try {
+                          requestFocus()
+                          p.start()
+                          paused = false
+                          applyVolume()
+                          return null
+                      } catch (e: Exception) {
+                          releasePlayer()
+                      }
+                  }
+                  if (isPlaying()) return null
+                  val songs = loadSongs()
+                  if (songs.isEmpty()) return NO_SONGS
+                  queue = songs.shuffled()
+                  index = 0
+                  failCount = 0
+                  startSong(queue[0])
+                  return null
+              }
+
+              fun stop(): String? {
+                  val p = player
+                  if (p == null || !isPlaying()) return NOTHING_PLAYING
+                  try {
+                      p.pause()
+                  } catch (e: Exception) {
+                  }
+                  paused = true
+                  resumeOnGain = false
+                  abandonFocus()
+                  return null
+              }
+
+              fun next(): String? {
+                  if (queue.isEmpty() || player == null) return play()
+                  index = (index + 1) % queue.size
+                  startSong(queue[index])
+                  return null
+              }
+
+              fun previous(): String? {
+                  if (queue.isEmpty() || player == null) return play()
+                  index = (index - 1 + queue.size) % queue.size
+                  startSong(queue[index])
+                  return null
+              }
+
+              fun playFavorite(): String? {
+                  if (!hasPermission()) return NO_PERMISSION
+                  val id = favoriteId()
+                  if (id < 0) return "هنوز آهنگ مورد علاقه‌ات رو انتخاب نکردی. از تنظیمات برنامه انتخابش کن."
+                  val songs = loadSongs()
+                  val fav = songs.firstOrNull { it.id == id }
+                      ?: return "آهنگ مورد علاقه‌ات رو توی گوشی پیدا نکردم. دوباره از تنظیمات انتخابش کن."
+                  queue = listOf(fav) + songs.filter { it.id != id }.shuffled()
+                  index = 0
+                  failCount = 0
+                  startSong(fav)
+                  return null
+              }
+
+              /** وقتی بیلی بیداره (داره گوش می‌ده یا حرف می‌زنه) صدای آهنگ کم می‌شه */
+              fun setDuck(d: Boolean) {
+                  ducked = d
+                  applyVolume()
+              }
+
+              fun release() {
+                  releasePlayer()
+                  abandonFocus()
+              }
+
+              // ---------- داخلی ----------
+
+              private fun isPlaying(): Boolean = try {
+                  player?.isPlaying == true
+              } catch (e: Exception) {
+                  false
+              }
+
+              private fun uriOf(song: Song): Uri =
+                  ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, song.id)
+
+              private fun startSong(song: Song) {
+                  releasePlayer()
+                  requestFocus()
+                  try {
+                      val mp = MediaPlayer()
+                      mp.setAudioAttributes(attrs)
+                      mp.setDataSource(ctx, uriOf(song))
+                      mp.setOnPreparedListener { m ->
+                          failCount = 0
+                          m.start()
+                          applyVolume()
+                      }
+                      mp.setOnCompletionListener { next() }
+                      mp.setOnErrorListener { _, _, _ ->
+                          onPlayError()
+                          true
+                      }
+                      player = mp
+                      paused = false
+                      mp.prepareAsync()
+                  } catch (e: Exception) {
+                      onPlayError()
+                  }
+              }
+
+              /** اگه یه فایل خراب بود، می‌ره سراغ بعدی؛ ولی اگه چند بار پشت‌سرهم خراب بود، ول می‌کنه */
+              private fun onPlayError() {
+                  failCount++
+                  if (failCount > 5 || queue.size <= 1) {
+                      releasePlayer()
+                      abandonFocus()
+                  } else {
+                      next()
+                  }
+              }
+
+              private fun applyVolume() {
+                  val v = if (ducked) 0.2f else 1f
+                  try {
+                      player?.setVolume(v, v)
+                  } catch (e: Exception) {
+                  }
+              }
+
+              private fun releasePlayer() {
+                  val p = player
+                  player = null
+                  if (p != null) {
+                      try {
+                          p.setOnCompletionListener(null)
+                          p.setOnErrorListener(null)
+                          p.setOnPreparedListener(null)
+                          p.release()
+                      } catch (e: Exception) {
+                      }
+                  }
+              }
+
+              private val focusListener = AudioManager.OnAudioFocusChangeListener { change ->
+                  when (change) {
+                      AudioManager.AUDIOFOCUS_LOSS -> {
+                          // یه برنامه‌ی دیگه (مثلاً ویدیو) صدا رو گرفت
+                          if (isPlaying()) {
+                              try {
+                                  player?.pause()
+                              } catch (e: Exception) {
+                              }
+                              paused = true
+                          }
+                      }
+                      AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+                          if (isPlaying()) {
+                              try {
+                                  player?.pause()
+                              } catch (e: Exception) {
+                              }
+                              resumeOnGain = true
+                          }
+                      }
+                      AudioManager.AUDIOFOCUS_GAIN -> {
+                          if (resumeOnGain) {
+                              resumeOnGain = false
+                              try {
+                                  player?.start()
+                              } catch (e: Exception) {
+                              }
+                          }
+                      }
+                  }
+              }
+
+              private fun requestFocus() {
+                  try {
+                      if (Build.VERSION.SDK_INT >= 26) {
+                          val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                              .setAudioAttributes(attrs)
+                              .setOnAudioFocusChangeListener(focusListener)
+                              .build()
+                          focusRequest = req
+                          audioManager.requestAudioFocus(req)
+                      } else {
+                          @Suppress("DEPRECATION")
+                          audioManager.requestAudioFocus(
+                              focusListener, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN
+                          )
+                      }
+                  } catch (e: Exception) {
+                  }
+              }
+
+              private fun abandonFocus() {
+                  try {
+                      if (Build.VERSION.SDK_INT >= 26) {
+                          focusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+                          focusRequest = null
+                      } else {
+                          @Suppress("DEPRECATION")
+                          audioManager.abandonAudioFocus(focusListener)
+                      }
+                  } catch (e: Exception) {
+                  }
+              }
+          }
+          BILI_EOF_7Q
+          cat > app/src/main/java/com/example/biliai/ui/SettingsScreen.kt <<'BILI_EOF_7Q'
+          package com.example.biliai.ui
+
+          import androidx.compose.foundation.background
+          import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.layout.Box
+          import androidx.compose.foundation.layout.Column
+          import androidx.compose.foundation.layout.Row
+          import androidx.compose.foundation.layout.Spacer
+          import androidx.compose.foundation.layout.fillMaxSize
+          import androidx.compose.foundation.layout.fillMaxWidth
+          import androidx.compose.foundation.layout.height
+          import androidx.compose.foundation.layout.imePadding
+          import androidx.compose.foundation.layout.padding
+          import androidx.compose.foundation.lazy.LazyColumn
+          import androidx.compose.foundation.lazy.items
+          import androidx.compose.foundation.shape.RoundedCornerShape
+          import androidx.compose.foundation.text.BasicTextField
+          import androidx.compose.material3.Text
+          import androidx.compose.runtime.Composable
+          import androidx.compose.runtime.LaunchedEffect
+          import androidx.compose.runtime.getValue
+          import androidx.compose.runtime.mutableStateOf
+          import androidx.compose.runtime.remember
+          import androidx.compose.runtime.setValue
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.graphics.SolidColor
+          import androidx.compose.ui.text.TextStyle
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import com.example.biliai.music.MusicPlayer
+          import com.example.biliai.music.Song
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.withContext
+
+          private val Cyan = Color(0xFF4DE8FF)
+          private val Muted = Color(0x99FFFFFF)
+          private val Chip = Color(0xFF262626)
+
+          @Composable
+          private fun Button(text: String, primary: Boolean = false, onClick: () -> Unit) {
+              Text(
+                  text = text,
+                  color = if (primary) Color.Black else Color.White,
+                  fontSize = 16.sp,
+                  modifier = Modifier
+                      .padding(top = 8.dp)
+                      .background(if (primary) Cyan else Chip, RoundedCornerShape(12.dp))
+                      .clickable { onClick() }
+                      .padding(horizontal = 14.dp, vertical = 9.dp)
+              )
+          }
+
+          /** صفحه‌ی تنظیمات: نمایش خودکار چهره + انتخاب آهنگ مورد علاقه */
+          @Composable
+          fun SettingsScreen(
+              music: MusicPlayer,
+              hasPermission: Boolean,
+              overlayGranted: Boolean,
+              fsiGranted: Boolean,
+              onRequestPermission: () -> Unit,
+              onOpenOverlay: () -> Unit,
+              onOpenFullScreen: () -> Unit,
+              onClose: () -> Unit
+          ) {
+              var songs by remember { mutableStateOf<List<Song>>(emptyList()) }
+              var loaded by remember { mutableStateOf(false) }
+              var favId by remember { mutableStateOf(music.favoriteId()) }
+              var favTitle by remember { mutableStateOf(music.favoriteTitle()) }
+              var query by remember { mutableStateOf("") }
+
+              LaunchedEffect(hasPermission) {
+                  if (hasPermission) {
+                      songs = withContext(Dispatchers.IO) { music.loadSongs() }
+                  }
+                  loaded = true
+              }
+
+              val q = query.trim()
+              val shown = if (q.isEmpty()) songs else songs.filter {
+                  it.title.contains(q, ignoreCase = true) || it.artist.contains(q, ignoreCase = true)
+              }
+
+              Column(
+                  Modifier
+                      .fillMaxSize()
+                      .background(Color.Black)
+                      .imePadding()
+                      .padding(horizontal = 20.dp, vertical = 14.dp)
+              ) {
+                  Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                      Text(
+                          text = "تنظیمات بیلی",
+                          color = Color.White,
+                          fontSize = 22.sp,
+                          modifier = Modifier.weight(1f)
+                      )
+                      Text(
+                          text = "✕ بستن",
+                          color = Color.White,
+                          fontSize = 18.sp,
+                          modifier = Modifier
+                              .background(Chip, RoundedCornerShape(10.dp))
+                              .clickable { onClose() }
+                              .padding(horizontal = 14.dp, vertical = 8.dp)
+                      )
+                  }
+                  Spacer(Modifier.height(8.dp))
+
+                  LazyColumn(Modifier.weight(1f)) {
+
+                      // ---------- نمایش خودکار چهره ----------
+                      item {
+                          Column(Modifier.fillMaxWidth().padding(bottom = 14.dp)) {
+                              Text(text = "نمایش چهره‌ی بیلی با صدا", color = Cyan, fontSize = 18.sp)
+                              Text(
+                                  text = "وقتی می‌گی «بیلی»، چهره‌اش خودش میاد جلو (حتی وقتی صفحه خاموشه یا برنامه‌ی دیگه‌ای بازه). برای این کار این اجازه‌ها لازمه:",
+                                  color = Muted,
+                                  fontSize = 13.sp,
+                                  modifier = Modifier.padding(top = 4.dp)
+                              )
+                              if (overlayGranted) {
+                                  Text(
+                                      text = "✓ نمایش روی برنامه‌های دیگه: داده شده",
+                                      color = Color(0xFF5CFFB0),
+                                      fontSize = 14.sp,
+                                      modifier = Modifier.padding(top = 8.dp)
+                                  )
+                              } else {
+                                  Button("اجازه‌ی نمایش روی برنامه‌های دیگه", primary = true) { onOpenOverlay() }
+                              }
+                              if (fsiGranted) {
+                                  Text(
+                                      text = "✓ نمایش روی صفحه‌ی قفل: داده شده",
+                                      color = Color(0xFF5CFFB0),
+                                      fontSize = 14.sp,
+                                      modifier = Modifier.padding(top = 6.dp)
+                                  )
+                              } else {
+                                  Button("اجازه‌ی نمایش روی صفحه‌ی قفل", primary = true) { onOpenFullScreen() }
+                              }
+                          }
+                      }
+
+                      // ---------- آهنگ مورد علاقه ----------
+                      item {
+                          Column(Modifier.fillMaxWidth().padding(bottom = 10.dp)) {
+                              Text(
+                                  text = "آهنگ مورد علاقه: " + (favTitle ?: "هنوز انتخاب نشده"),
+                                  color = Cyan,
+                                  fontSize = 18.sp
+                              )
+                              Text(
+                                  text = "بعد از انتخاب، بگو «بیلی، اون آهنگ خوبه رو بذار» تا پخش بشه.",
+                                  color = Muted,
+                                  fontSize = 13.sp,
+                                  modifier = Modifier.padding(top = 4.dp)
+                              )
+                              if (favId >= 0) {
+                                  Button("حذف آهنگ مورد علاقه") {
+                                      music.setFavorite(null)
+                                      favId = -1L
+                                      favTitle = null
+                                  }
+                              }
+                          }
+                      }
+
+                      if (!hasPermission) {
+                          item {
+                              Column(Modifier.fillMaxWidth()) {
+                                  Text(
+                                      text = "برای دیدن آهنگ‌های گوشی، به بیلی اجازه بده:",
+                                      color = Muted,
+                                      fontSize = 15.sp
+                                  )
+                                  Button("اجازه‌ی دسترسی به آهنگ‌ها", primary = true) { onRequestPermission() }
+                              }
+                          }
+                      } else if (!loaded) {
+                          item { Text(text = "در حال خواندن آهنگ‌ها…", color = Muted, fontSize = 15.sp) }
+                      } else if (songs.isEmpty()) {
+                          item {
+                              Text(
+                                  text = "آهنگی توی گوشی پیدا نشد. فایل آهنگ (مثلاً mp3) توی گوشی بذار و دوباره بیا اینجا.",
+                                  color = Muted,
+                                  fontSize = 15.sp
+                              )
+                          }
+                      } else {
+                          item {
+                              Column(Modifier.fillMaxWidth()) {
+                              BasicTextField(
+                                  value = query,
+                                  onValueChange = { query = it },
+                                  singleLine = true,
+                                  textStyle = TextStyle(color = Color.White, fontSize = 17.sp),
+                                  cursorBrush = SolidColor(Color.White),
+                                  modifier = Modifier
+                                      .fillMaxWidth()
+                                      .background(Chip, RoundedCornerShape(10.dp))
+                                      .padding(12.dp),
+                                  decorationBox = { inner ->
+                                      Box {
+                                          if (query.isEmpty()) {
+                                              Text(text = "جستجوی آهنگ…", color = Muted, fontSize = 17.sp)
+                                          }
+                                          inner()
+                                      }
+                                  }
+                              )
+                              Spacer(Modifier.height(10.dp))
+                              }
+                          }
+                          items(shown, key = { it.id }) { song ->
+                              val selected = song.id == favId
+                              Column(
+                                  Modifier
+                                      .fillMaxWidth()
+                                      .padding(vertical = 3.dp)
+                                      .background(
+                                          if (selected) Color(0xFF12323A) else Chip,
+                                          RoundedCornerShape(10.dp)
+                                      )
+                                      .clickable {
+                                          music.setFavorite(song)
+                                          favId = song.id
+                                          favTitle = song.title
+                                      }
+                                      .padding(horizontal = 14.dp, vertical = 10.dp)
+                              ) {
+                                  Text(
+                                      text = (if (selected) "★ " else "") + song.title,
+                                      color = if (selected) Cyan else Color.White,
+                                      fontSize = 17.sp
+                                  )
+                                  if (song.artist.isNotEmpty()) {
+                                      Text(text = song.artist, color = Muted, fontSize = 13.sp)
+                                  }
+                              }
+                          }
+                      }
+                  }
+              }
+          }
+          BILI_EOF_7Q
+          cat > app/src/main/java/com/example/biliai/WakeUi.kt <<'BILI_EOF_7Q'
+          package com.example.biliai
+
+          import android.app.KeyguardManager
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.content.Context
+          import android.content.Intent
+          import android.graphics.Color
+          import android.graphics.PixelFormat
+          import android.os.Build
+          import android.os.Handler
+          import android.os.Looper
+          import android.os.PowerManager
+          import android.provider.Settings
+          import android.view.Gravity
+          import android.view.View
+          import android.view.WindowManager
+          import androidx.core.app.NotificationCompat
+
+          /**
+           * وقتی کاربر می‌گه «بیلی»، صفحه‌ی بیلی رو میاره جلو.
+           * دو راه همزمان امتحان می‌شه چون اندروید شروع صفحه از پس‌زمینه رو محدود کرده:
+           *  1) شروع مستقیم صفحه (اگه اجازه‌ی «نمایش روی برنامه‌های دیگه» داده شده باشه کار می‌کنه)
+           *  2) اعلان تمام‌صفحه (وقتی صفحه خاموش یا قفله، خودش صفحه رو باز می‌کنه؛ وگرنه فقط یه اعلان بالای صفحه می‌ده)
+           */
+          object WakeUi {
+              const val EXTRA_FROM_WAKE = "from_wake"
+              private const val CHANNEL_ID = "bili_wake"
+              private const val NOTIF_ID = 2
+
+              private fun launchIntent(ctx: Context): Intent =
+                  Intent(ctx, MainActivity::class.java).apply {
+                      addFlags(
+                          Intent.FLAG_ACTIVITY_NEW_TASK or
+                              Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                              Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                      )
+                      putExtra(EXTRA_FROM_WAKE, true)
+                  }
+
+              private val main = Handler(Looper.getMainLooper())
+
+              fun show(ctx: Context) {
+                  val intent = launchIntent(ctx)
+                  val canOverlay = try {
+                      Settings.canDrawOverlays(ctx)
+                  } catch (e: Exception) {
+                      false
+                  }
+                  // اعلان فقط وقتی لازمه که صفحه خاموش/قفله، یا اجازه‌ی «نمایش روی برنامه‌های دیگه» رو نداریم
+                  if (!BiliHub.uiVisible && (!canOverlay || isScreenOffOrLocked(ctx))) {
+                      postFullScreenNotification(ctx, intent)
+                  }
+                  if (canOverlay) {
+                      startWithOverlay(ctx, intent)
+                  } else {
+                      try {
+                          ctx.startActivity(intent)
+                      } catch (e: Exception) {
+                      }
+                  }
+              }
+
+              private fun isScreenOffOrLocked(ctx: Context): Boolean {
+                  return try {
+                      val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
+                      val km = ctx.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+                      val screenOff = !pm.isInteractive
+                      val locked = km.isKeyguardLocked
+                      screenOff || locked
+                  } catch (e: Exception) {
+                      false
+                  }
+              }
+
+              /**
+               * اندروید جدید شروع صفحه از پس‌زمینه رو فقط وقتی اجازه می‌ده که برنامه یه پنجره‌ی روی-بقیه (overlay) قابل‌دیدن داشته باشه.
+               * پس یه پنجره‌ی یک‌پیکسلی و تقریباً نامرئی می‌سازیم، صفحه رو باز می‌کنیم و بعد از چند ثانیه پنجره رو برمی‌داریم.
+               */
+              private fun startWithOverlay(ctx: Context, intent: Intent) {
+                  main.post {
+                      var added: View? = null
+                      val wm = ctx.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                      try {
+                          val v = View(ctx)
+                          v.setBackgroundColor(Color.argb(1, 0, 0, 0))
+                          val type = if (Build.VERSION.SDK_INT >= 26) {
+                              WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                          } else {
+                              WindowManager.LayoutParams.TYPE_PHONE
+                          }
+                          val lp = WindowManager.LayoutParams(
+                              1, 1, type,
+                              WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                                  WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                                  WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                              PixelFormat.TRANSLUCENT
+                          )
+                          lp.gravity = Gravity.TOP or Gravity.START
+                          wm.addView(v, lp)
+                          added = v
+                      } catch (e: Exception) {
+                      }
+                      val overlayView = added
+                      main.postDelayed({
+                          try {
+                              ctx.startActivity(intent)
+                          } catch (e: Exception) {
+                          }
+                      }, 150L)
+                      if (overlayView != null) {
+                          main.postDelayed({
+                              try {
+                                  wm.removeView(overlayView)
+                              } catch (e: Exception) {
+                              }
+                          }, 3000L)
+                      }
+                  }
+              }
+
+              fun cancel(ctx: Context) {
+                  try {
+                      val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                      nm.cancel(NOTIF_ID)
+                  } catch (e: Exception) {
+                  }
+              }
+
+              private fun postFullScreenNotification(ctx: Context, intent: Intent) {
+                  try {
+                      val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                      if (Build.VERSION.SDK_INT >= 26) {
+                          val ch = NotificationChannel(CHANNEL_ID, "بیدار شدن بیلی", NotificationManager.IMPORTANCE_HIGH)
+                          ch.setSound(null, null)
+                          ch.enableVibration(false)
+                          nm.createNotificationChannel(ch)
+                      }
+                      val pi = PendingIntent.getActivity(
+                          ctx, 10, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                      )
+                      val n = NotificationCompat.Builder(ctx, CHANNEL_ID)
+                          .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+                          .setContentTitle("بیلی")
+                          .setContentText("بیلی بیدار شد؛ لمس کن تا چهره‌اش رو ببینی")
+                          .setPriority(NotificationCompat.PRIORITY_HIGH)
+                          .setCategory(NotificationCompat.CATEGORY_CALL)
+                          .setContentIntent(pi)
+                          .setFullScreenIntent(pi, true)
+                          .setAutoCancel(true)
+                          .setTimeoutAfter(15000)
+                          .build()
+                      nm.notify(NOTIF_ID, n)
+                  } catch (e: Exception) {
+                  }
+              }
+          }
+          BILI_EOF_7Q
+          base64 -d > app/bili.keystore <<'BILI_EOF_7Q'
+          MIIKEAIBAzCCCboGCSqGSIb3DQEHAaCCCasEggmnMIIJozCCBaoGCSqGSIb3DQEHAaCCBZsEggWX
+          MIIFkzCCBY8GCyqGSIb3DQEMCgECoIIFQDCCBTwwZgYJKoZIhvcNAQUNMFkwOAYJKoZIhvcNAQUM
+          MCsEFHWhlt+XCgbbcFJL7KJj0c/+gmhlAgInEAIBIDAMBggqhkiG9w0CCQUAMB0GCWCGSAFlAwQB
+          KgQQo4HJ9q/pHwuejYDb98nf/ASCBNAFZ8cFT5hw34BnFUEVlUb8lWUhmhbPMY0clMloXWM27Hn7
+          4wLUuXeOKZqdww7ijcu4vcj6gLCyimkl1nZZZXspuNvtQynbKiRIn2pL6c2+qGQYQy1zFU0PhIXA
+          Vk5UPZA8lUfvCumO4mExYUtCd8s+mbSt4OpjjrX5xEWduq2HZQgYbPrKdCA3qwDhqAwSfIeA03zz
+          OzKYJrG8wfNE6IZkLKLp7+OXnHnqz2Jmvqoy/hDLHp6vMZC+jTLq7PWjL/qZ9EXSMxUg22uMYPV+
+          maJ4Ohk1y9TXaNF+sUSSq52TDGTAhabpm3b02Fq/mUlU9P1AUmuJv16ya2IKJrHooCsnPKfGkrVg
+          xeczTx293VrIvpOBpQ5RCZO/uLgcvvENZx7J/wsTJz1wC+x4OlMSsmqwB+6vLIzQEcbkPRRzeNf7
+          Njbb5BBG+vjqqjQAG0zWdTeNlgP1wW0IKRPrVmGsvr3DAdcsYVJU/55Qu2oVzH2I5Yl4SL6H8SuT
+          y68JEYNZ5vCLYCAFevNTGvdZAmyWfqWEP213WbzuHaXhQTLvz7+XCEknc8adYLeWEkVHHZT/g9vV
+          2qBqfMIIMhHSGcUmIcg2ZK9Zumgeu2Je1idOLJ3rosY6ZD+rD/yqsEGT0CxvHj0xK/M/TyHM9RAa
+          8g1NVJGNxOWbpZmAkRZKBDOxzXBmmF03rwEP7XAdtkUMhSRkr2q9ljvbafr15/PC9ZCxhXwVYfEL
+          WGE0QVUUuZGuVexPA7NtUwuw50nCNhEH32fNRjEt2vZhWxesXimNPHwd0cF9/luQDqRgys/+FqGR
+          nA1yvg+YiZJgBpmeK/sZx53KDP3o2oeu3R3ndi4BKPF93kHDoUNZVDy3V/7GOa/Qz2KO3sbSN6LB
+          BZQZuOY0s7DWABoqkGbdjEC3A8SA+59EpfkgXGpz6bJk2yIWWi6YI87HgGI6/fUycW2cqAr/P/Sv
+          1lUR6tL+YsulP4RR8Ofp3eDlSI7H5Vx+t30/dqexDfE3I+nhAsJ6eak7bbVbHckkDWEOheq8xwzM
+          pO8lYBqpelDucJm1M/34tDMb2BkdRejKHF4Z5foYABtEc5TbfBhx1tHHIWDKsYCe7LFa6Juzt3wV
+          oPPb58M+WG36BrSGani//Ig9JUu9ifRpdik6IGPsaoRniIgAeMG/HuGP4MjCRHKacQ7a4s7gl1Rt
+          q82VuP4ZjS9DIxsy1BoGX/l2gdXuYDbTopO5OEm3RgvQ7qJeg1GYxT9g3/FBGw+FpxHTulEbpmkL
+          hbvnaqyIeyEHFEWtSIv9veDvosa4O5Gij/thPUCAtzCmrb32HB4txTh1hoz12QdqzfezlDDOyzoE
+          T+F9gnB9xthAgUh93VSTlyow5s45Fkr/i+GsgCnFYRH1mBk+S8RgHDvvtGflFdI9KS38XOqXVL/e
+          1mtBdQfWtY+9ISvwxyoMBBOPOuhsx/JpreywBsOQXZb1YwJtCi7IPgNse9Tjb5YcVwxQI74RRfZl
+          1aYUmRIOr40sJPwVLoBeuikaTNSk81aTlMLBOeyjOmkZhTHHNc7BV7r84JBF2sN2+Wxu9FWZY5sd
+          agueDtV/Z/as/OEi2YNXuiIkmZ8/ACX5bYcSEAUWOy+Oq3AEVV4s8OcGISOxacdankywwG8xdswt
+          gTE8MBcGCSqGSIb3DQEJFDEKHggAYgBpAGwAaTAhBgkqhkiG9w0BCRUxFAQSVGltZSAxNzkxMDQ5
+          NDA1MzMzMIID8QYJKoZIhvcNAQcGoIID4jCCA94CAQAwggPXBgkqhkiG9w0BBwEwZgYJKoZIhvcN
+          AQUNMFkwOAYJKoZIhvcNAQUMMCsEFHjTurzmfUpQP0rQqgrcdMVoTQtxAgInEAIBIDAMBggqhkiG
+          9w0CCQUAMB0GCWCGSAFlAwQBKgQQeVDh9dPMVc6Y9hWuYYK2D4CCA2A9/zXv3fjAkU3XJrVzCAQS
+          kwk5YBNJfk411wWyQA4lLxVbRlF5esKIXqkpSSL1HqwmcriFli+OH2GAzidQvzUyKGOyXSRqB2QE
+          bv7oeIfA6s47umKaHUkdS9AMtiOZjVrJZSJlxhd97rN0R/kS0Uh2p6OtgenXOQ700R7xCGY5URbL
+          Sd7BqK/SRdNyqkqXvCU85F+azBwg6EVDG7s0AcejYGe3YfjRAQoCS1EOL8FYB3CaybzTM0m7988E
+          pAhMWzmrYG6qVsi3HyDpszZi/jlY1EYivy8hJs04vPVsf10z12+kXRPwOJnV3aXZ2gQqp+gn9a08
+          Z3rFhjTe20RuQGYGXugwheRGiwQgI8o4JYbvmOPtBG/ht3ubjBSNl7wNbJu5tyaorq37QFdP+9VT
+          GoWPcbm4LTUZKqjCcvv5lUhrD060HcMHvJ42b6PyI93KffYv8PAHU7pjqSB8ZR1Q75LKVzFC76S3
+          4pA+XgokTgYRgAojdM0FqOfcVKCR/+FwXihFxpn0cOwlsFa2CHSQ9q94fOzuKOZRgIv+s21SYqFf
+          QdOH10/lvbStZfolG4oJybeR42yeilM9uUq0RSxDb7djsezK5TwH9/pUNeI0z4DDW17xfm50rDJm
+          XX0KPHY+8+xDG4WWPnPNboK1/DI/4mhXs3R1M+sFtj3dDm2SEiaXpmgLefZrUiUgjik+2QvmMkIz
+          ICLyy1wYCDGwFiATsuZGY2/UoUf4BXvoyRycj8B2bHRDrv164x8GAUshHDuNEeAl/KnZhqm3HVaA
+          h8NUXyVPrQyqoNwF+hF5UGgK39S1eDqsH3TXQsGNCPApUeifNlLgleDRd2zKwcRG2ZhWzXHv68zy
+          Ad/z9zpCdUE2iDdqVprIEC4+jLLpuq8pVeBYfIJrA2wSBPrupXaVVQp9/otRSwVYMLAGhdCAQRJk
+          ikZzvUvQlIqzslGU809BQiK1qgXGP3GmTmd42vwbzOdct544GKtkbBEXDx3kBGD+AiAFk49xSJiB
+          bP4K/bNjC+k4Wgt2SmD0Bq1nrNdogq3lowcjDLoJvZNkafzCJ9SipCXunOsdTiUy4jtITA7MAHrE
+          bnrc7hAU/StXpa3pM4UicGiwrbka4gCLyASp29Ku4Y4Kq+ZaIwkA2k+bqC4tYv4KG68wTTAxMA0G
+          CWCGSAFlAwQCAQUABCAf3seQzh0GJYB+FJzwq/wLBljXw93NQPKWMC6KSnMl/gQU1ZXjGOthMHk+
+          RFnyQOv8dcTTzUQCAicQ
+          BILI_EOF_7Q
+
+      - name: Download Persian Vosk model (bundled into the APK, runs offline)
+        run: |
+          mkdir -p app/src/main/assets
+          curl -fL -o model.zip https://alphacephei.com/vosk/models/vosk-model-small-fa-0.42.zip
+          unzip -q model.zip
+          mv vosk-model-small-fa-0.42 app/src/main/assets/model-fa
+          rm -rf app/src/main/assets/model-fa/test model.zip
+          ls app/src/main/assets/model-fa
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Accept Android SDK licenses (SDK is preinstalled on the runner)
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Rename APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk Bili.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Bili-APK
+          path: Bili.apk
+
+      - name: Publish APK in Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: bili-build-${{ github.run_number }}
+          name: Bili APK (build ${{ github.run_number }})
+          files: Bili.apk
+
